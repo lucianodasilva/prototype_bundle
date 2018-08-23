@@ -77,7 +77,7 @@ namespace proto {
 
 	struct preload_histograph_radix {
 
-		static inline constexpr uint8_t get_byte (uint32_t v, int radix) {
+		static inline constexpr int get_byte (uint32_t v, int radix) {
 			return (v >> (radix * 8)) & 0xFF;
 		}
 
@@ -92,41 +92,39 @@ namespace proto {
 		void sort(std::vector < uint32_t > & items) {
 
 			// clear
-			std::array < uint32_t, 256 * radix_count >	histograph{};
-			std::array < uint32_t, 256 * radix_count >	indexes{};
+			std::array < int, radix_count * 0x100 > histograph { 0 };
+			std::array < int, radix_count >			offset_sum { 0 };
 
 			// calculate histograph positions
 			for (auto const & item : items) {
 				for (int radix = 0; radix < radix_count; ++radix) {
-					++histograph[(radix * 256) + get_byte(item, radix)];
+					int key = (item >> (radix * 8)) & 0xFF;
+					++histograph[radix * 0x100 + key];
 				}
 			}
 
 			// histograph offsets
-			int offsets [radix_count] = {0};
-
-			for (int i = 0; i < 256; ++i) {
+			for (int i = 0; i < 0x100; ++i) {
 				for (int radix = 0; radix < radix_count; ++radix) {
-					auto t = histograph [radix * 256 + i];
-					histograph [radix * 256 + i] = offsets[radix];
-					offsets [radix] += t;
+
+					int & h = histograph [radix * 0x100 + i];
+
+					if (h != 0) {
+						int t = h;
+						h = offset_sum[radix];
+						offset_sum[radix] += t;
+					}
 				}
 			}
 
-			for (uint32_t radix = 0; radix < radix_count; ++radix) {
-				auto h_offset = 256 * radix;
+			for (int radix = 0; radix < radix_count; ++radix) {
 
 				// swap values
 				for (auto const & item : items) {
 					// get value
-					auto key = get_byte(item, radix);
-
+					auto key = (item >> (radix * 8)) & 0xFF;
 					// get and increment offset
-					auto & item_offset = histograph[h_offset + key];
-
-					auto index = item_offset;
-					++item_offset;
-
+					auto index = histograph [radix * 0x100 + key]++;
 					// set value to swap
 					swap[index] = item;
 				}
@@ -183,8 +181,8 @@ static void BM_Baseline(benchmark::State& state) {
 	}
 }
 
-BENCHMARK(BM_Baseline)
-->Range(8, 8 << 10);
+//BENCHMARK(BM_Baseline)
+//->Range(8, 8 << 10);
 
 static void BM_NaiveRadix (benchmark::State& state) {
 
@@ -205,8 +203,8 @@ static void BM_NaiveRadix (benchmark::State& state) {
 	}
 }
 
-BENCHMARK(BM_NaiveRadix)
-	->Range(8, 8 << 10);
+//BENCHMARK(BM_NaiveRadix)
+//	->Range(8, 8 << 10);
 
 static void BM_PreloadedRadix(benchmark::State& state) {
 
