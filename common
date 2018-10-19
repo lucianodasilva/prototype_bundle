@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+
+function on_fail {
+        echo $1
+        exit 1
+}
+
+function on_fail_echo {
+	echo $1
+	return 1
+}
+
+function wait_for_port_opening () {
+        PORT=$1
+        TIMEOUT_SECONDS=$2
+
+        ELAPSED_TIME=0
+
+        while ! nc localhost $PORT < /dev/null > /dev/null 2>&1; do
+                sleep 1
+                let "ELAPSED_TIME++"
+
+                if [ "$ELAPSED_TIME" -gt "$TIMEOUT_SECONDS" ]; then
+                        return 1
+                fi
+        done
+
+        return 0
+}
+
+function wait_for_port_closing () {
+        PORT=$1
+        TIMEOUT_SECONDS=$2
+
+        ELAPSED_TIME=0
+
+        while nc localhost $PORT < /dev/null > /dev/null 2>&1; do
+                sleep 1
+                let "ELAPSED_TIME++"
+
+                if [ "$ELAPSED_TIME" -gt "$TIMEOUT_SECONDS" ]; then
+                        return 1
+                fi
+        done
+
+        return 0
+}

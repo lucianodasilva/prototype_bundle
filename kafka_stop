@@ -1,0 +1,37 @@
+#!/usr/bin/sh
+
+if [[ -z "$1" && -z ${CONFLUENT_HOME+x} ]]; then
+
+echo "
+    usage:
+        stop_kafka [root path to confluent]
+    or:
+        stop_kafka ( with env variable CONFLUENT_HOME defined )
+"
+exit 1
+fi
+
+confluent_path=$CONFLUENT_HOME
+
+if [[ ! -z "$1" ]]; then
+    confluent_path=$1
+fi
+
+
+# load common file
+script_path=$(realpath `dirname "$0"`)
+source $script_path/common
+
+kafka_port="9092"
+zookeeper_port="2181"
+
+echo "Closing Kafka"
+$confluent_path/bin/kafka-server-stop
+wait_for_port_closing $kafka_port 10 || on_fail_echo "Kafka closing failed! Forcing" || fuser -k $kafka_port/tcp
+echo "Kafka closed!"
+
+echo "Closing Zookeeper"
+$confluent_path/bin/zookeeper-server-stop
+wait_for_port_closing $zookeeper_port 10 || on_fail_echo "Zookeeper closing failed! Forcing" || fuser -k $zookeeper_port/tcp
+echo "Zookeeper closed!"
+

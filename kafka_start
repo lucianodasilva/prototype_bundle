@@ -1,0 +1,41 @@
+#!/usr/bin/sh
+
+if [[ -z "$1" && -z ${CONFLUENT_HOME+x} ]]; then
+
+echo "
+	usage:
+		start_kafka [root path to confluent]
+	or:
+		start_kafka ( with env variable CONFLUENT_HOME defined )
+"
+exit 1
+fi
+
+confluent_path=$CONFLUENT_HOME
+
+if [[ ! -z "$1" ]]; then
+	confluent_path=$1
+fi
+
+# load common file
+script_path=$(realpath `dirname "$0"`)
+source $script_path/common
+
+kafka_port=9092
+zookeeper_port=2181
+
+echo "Starting Zookeeper"
+$confluent_path/bin/zookeeper-server-start $confluent_path/etc/kafka/zookeeper.properties > /dev/null 2>&1 &
+wait_for_port_opening $zookeeper_port 10 || on_fail "Zookeeper startup failed!"
+echo "Zookeeper started!"
+
+function error_close_zookeeper () {
+	fuser -k $zookeeper_port/tcp
+	exit 1
+}
+
+echo "Starting Kafka"
+$confluent_path/bin/kafka-server-start $confluent_path/etc/kafka/server.properties > /dev/null 2>&1 &
+wait_for_port_opening $kafka_port 10 || on_fail_echo "Kafka startup failed!" || error_close_zookeeper
+echo "Kafka started!"
+
