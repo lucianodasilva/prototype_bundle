@@ -7,18 +7,35 @@
 #include <malloc.h>
 #include <zconf.h>
 #include <iostream>
+#include <cstring>
 
 namespace memory {
+
+	namespace literals {
+		constexpr std::size_t operator ""_kb(unsigned long long v) {
+			return v << 10;
+		}
+
+		constexpr std::size_t operator ""_mb(unsigned long long v) {
+			return v << 20;
+		}
+	}
 
 	struct node_flags {
 		bool marked : 1;
 		bool pinned : 1;
 	};
 
-	using page_address = uint32_t;
 	using page_length  = uint32_t;
 	using table_address = uint32_t;
 
+	using page_offset = uint32_t;
+	using page_id = uint8_t;
+
+	struct page_address {
+		page_offset	offset 	: 24;
+		page_id		page 	: 8;
+	};
 
 	struct table_object {
 		page_address 		address;
@@ -40,56 +57,22 @@ namespace memory {
 	};
 
 	struct page_header {
-		page_address 		next;
+		void (*destructor)(uint8_t *);
+		page_offset 		next;
 		page_length			length;
 		table_address		node;
+
+		inline uint8_t * begin () { return reinterpret_cast < uint8_t * > (this) + sizeof (page_header); }
+		inline uint8_t * end () { begin () + length; }
+
+		inline void dispose () {
+			(*destructor)(begin());
+		}
 	};
 
-	struct page {
-	public:
-
-		page () :
-			_capacity (sysconf (_SC_PAGESIZE)),
-			_current_address {0}
-		{
-			_buffer = reinterpret_cast < uint8_t * > (memalign (_capacity, _capacity));
-		}
-
-		~page(){
-			free(_buffer);
-		}
-
-		page_address allocate (page_length length, table_address table_node) {
-			auto address = _current_address;
-			_current_address += length + sizeof(page_header); // TODO: automatically align perhaps?
-
-			auto & header = get_header (address);
-
-			header.next = _current_address;
-			header.length = length;
-			header.node = table_node;
-
-			return address;
-		}
-
-		inline page_header & get_header (page_address address) {
-			return *reinterpret_cast < page_header * >  (_buffer + address);
-		}
-
-		inline page_header & get_header (table_node const & node) {
-			return get_header (node.obj.address);
-		}
-
-		template < typename _t >
-		_t * get_ptr (table_node const & node) {
-			return reinterpret_cast < _t * > (_buffer + node.obj.address + sizeof(page_header));
-		}
-
-	private:
-
-		uintptr_t const _capacity;
-		uint8_t * 		_buffer;
-		uintptr_t 		_current_address;
+	struct page_header_allocated {
+		page_header & 	header;
+		page_address 	address;
 	};
 
 	struct table {
@@ -112,6 +95,21 @@ namespace memory {
 			return index;
 		}
 
+		void delete_obj (table_address object) {
+			// clear refs
+			auto & node = get(object);
+
+			table_address next = node.obj.first_ref;
+
+			while (next) {
+				auto rem = next;
+				next = get(rem).next;
+				release(rem);
+			}
+
+			remove (root().next, object);
+		}
+
 		void delete_ref (table_address from_object, table_address ref) {
 			remove (_data[from_object].obj.first_ref, ref);
 		}
@@ -123,7 +121,7 @@ namespace memory {
 		struct enumerator {
 			table_address address {0};
 
-			inline operator bool () const { return address != 0; }
+			inline explicit operator bool () const { return address != 0; }
 
 			inline table_node & current (table * t) {
 				return t->_data [address];
@@ -161,13 +159,19 @@ namespace memory {
 			if (en.address == 0)
 				return;
 
-			do {
+			if (root_next_ptr == address) {
 				auto & item = en.current(this);
-				if (item.next == address) {
-					item.next = _data [address].next;
-					break;
-				}
-			} while (en.next(this));
+				root_next_ptr = item.next;
+			} else {
+				do {
+					auto &item = en.current(this);
+
+					if (item.next == address) {
+						item.next = _data[address].next;
+						break;
+					}
+				} while (en.next(this));
+			}
 
 			release (address);
 		}
@@ -180,6 +184,9 @@ namespace memory {
 				_free_head = _free_tail;
 				grow_table (_data.size () * 2);
 			}
+
+			// clear node
+			_data [index] = {};
 
 			return index;
 		}
@@ -211,19 +218,198 @@ namespace memory {
 
 	};
 
+	template < std::size_t capacity >
+	struct page {
+	public:
+
+		struct enumerator {
+			page_offset offset {0};
+
+			inline explicit operator bool () const { return offset != 0; }
+
+			inline page_header * current (page & p) {
+				return reinterpret_cast  < page_header * > (p._buffer + offset);
+			}
+
+			inline bool next (page & p) {
+				offset = current (p)->next;
+				return offset != 0;
+			}
+		};
+
+		page () = default;
+
+		inline page (page && p) noexcept {
+			swap (p);
+		}
+
+		inline page & operator = (page && p) noexcept {
+			swap (p);
+			return *this;
+		}
+
+		~page(){
+			free(_buffer);
+		}
+
+		void swap (page & p) noexcept {
+			using std::swap;
+			swap (_buffer, p._buffer);
+			swap (_offset, p._offset);
+		}
+
+		void reset () {
+			_offset = 0;
+		}
+
+		bool is_valid (page_offset offset) const noexcept {
+			return offset < _offset;
+		}
+
+		bool has_capacity (page_length length) const noexcept {
+			return capacity > (_offset + length);
+		}
+
+		bool empty () const noexcept {
+			return _offset == 0;
+		}
+
+		page_header_allocated allocate (page_length length) {
+			auto offset = _offset;
+			_offset += length + sizeof(page_header); // TODO: automatically align perhaps?
+
+			auto * header = get_header (offset);
+
+			header->next = _offset;
+			header->length = length;
+
+			return { *header, {offset} };
+		}
+
+		page_header_allocated move_allocated (page_header & header) {
+			auto alloc = allocate (header.length);
+
+			alloc.header.node = header.node;
+			alloc.header.destructor = header.destructor;
+
+			std::copy(header.begin(), header.end(), alloc.header.begin());
+
+			return alloc;
+		}
+
+		inline page_header * get_header (page_offset offset) {
+			return reinterpret_cast < page_header * >  (_buffer + offset);
+		}
+
+		template < typename _t >
+		_t * get_ptr (page_offset offset) {
+			return reinterpret_cast < _t * > (_buffer + offset + sizeof(page_header));
+		}
+
+	private:
+		uint8_t * 		_buffer { reinterpret_cast < uint8_t * > (memalign (sysconf (_SC_PAGESIZE), capacity)) };
+		page_offset 	_offset { 0 };
+	};
+
+	template < std::size_t page_size >
+	struct paging {
+
+		using page_type = page < page_size >;
+
+		page_type					work_page;
+		std::vector < page_type > 	pages;
+
+		paging () {
+			// add active page
+			pages.emplace_back ();
+		}
+
+		bool is_valid (page_address address) const noexcept {
+			return pages.size() < address.page && pages[address.page].is_valid(address.offset);
+		}
+
+		inline page_header * get_header (page_address address) {
+			return pages [address.page].get_header (address.offset);
+		}
+
+		template < typename _t >
+		inline _t * get_ptr (page_address address) {
+			return pages [address.page].template get_ptr < _t > (address.offset);
+		}
+
+		page_header_allocated allocate (page_length length) {
+			if (!pages.back ().has_capacity (length)) {
+				pages.emplace_back();
+			}
+
+			auto alloc = pages.back ().allocate (length);
+			alloc.address.page = pages.size() - 1;
+
+			return alloc;
+		}
+
+		void compress (table & table) {
+
+			uint32_t recycled_page = 0;
+			work_page.reset();
+
+			for (auto & page : pages) {
+				if (page.empty())
+					continue;
+
+				typename page_type::enumerator en {};
+
+				do {
+					if (!work_page.has_capacity(en.current(page)->length)) {
+						std::swap (pages[recycled_page], work_page);
+						work_page.reset();
+						++recycled_page;
+					}
+
+					auto * header = en.current(page);
+
+					if (table.get(header->node).obj.flags.marked) {
+						// move from one page to another if marked
+						auto alloc = work_page.move_allocated(*header);
+						alloc.address.page = recycled_page;
+						// update new allocated address
+						table.get(header->node).obj.address = alloc.address;
+					} else {
+						// delete object
+						header->dispose();
+					}
+
+				} while (en.next(page));
+
+				page.reset();
+			}
+
+			std::swap (pages[recycled_page], work_page);
+		}
+	};
+
+	template < std::size_t page_capacity >
 	struct collector {
 	public:
 
 		template < typename _t, typename ... _args_tv >
 		inline table_address allocate (_args_tv && ... args) {
 			auto table_index = _table.add_obj();
-			auto address = _page.allocate(sizeof(_t), table_index);
+
+			auto alloc = _paging.allocate (sizeof(_t));
+
+			// set destructor
+			alloc.header.destructor = [](uint8_t * ptr) {
+				reinterpret_cast < _t * > (ptr)->~_t();
+			};
+
+			alloc.header.node = table_index;
 
 			auto & obj = _table.get (table_index);
-			obj.obj.address = address;
+			obj.obj.address = alloc.address;
 
 			_reference_stack.push(table_index);
-			new (_page.get_ptr < _t > (obj)) _t (std::forward < _args_tv > (args)...);
+			new (_paging.template get_ptr < _t > (alloc.address)) _t (std::forward < _args_tv > (args)...);
 			_reference_stack.pop();
 
 			return table_index;
@@ -231,7 +417,7 @@ namespace memory {
 
 		template < typename _t >
 		inline _t * get_ptr (table_address obj) {
-			return _page.get_ptr < _t > (_table.get(obj));
+			return _paging.template get_ptr < _t > (_table.get(obj).obj.address);
 		}
 
 		table_address get_root () const {
@@ -286,17 +472,23 @@ namespace memory {
 				gray_nodes.resize(0);
 			}
 
-			// sweep
+			// sweep and compress
+			_paging.compress(_table);
+
+			// reset markers and clear nodes
 			table::enumerator obj_en;
 
+			table_address prev = obj_en.address;
 			while (obj_en.next(&_table)) {
 
 				auto & node = obj_en.current(&_table);
 
 				if (node.obj.flags.marked) {
 					node.obj.flags.marked = false;
+					prev = obj_en.address;
 				} else {
-					std::cout << "Delete: " << obj_en.address << std::endl;
+					_table.delete_obj(obj_en.address);
+					obj_en.address = prev;
 				}
 			}
 		}
@@ -304,15 +496,18 @@ namespace memory {
 	private:
 		static thread_local std::stack < uint32_t > _reference_stack;
 
-		page 			_page;
-		table 			_table;
+		paging < page_capacity >	_paging;
+		table 						_table;
 	};
 
-	thread_local std::stack < uint32_t > collector::_reference_stack;
+	template < std::size_t page_capacity >
+	thread_local std::stack < uint32_t > collector < page_capacity >::_reference_stack;
 
 }
 
-memory::collector _gc_service;
+using namespace memory::literals;
+
+memory::collector < 16_mb > _gc_service;
 
 template < typename _t >
 struct gc {
@@ -401,21 +596,25 @@ struct demo2 {
 	gc < int > cenas;
 };
 
-void gc_naive_sweep (benchmark::State& state) {
+void gc_naive_mark_and_copy (benchmark::State& state) {
 
-	auto xx = gc_new<demo>();
-
+	for (auto _ : state)
 	{
-		auto yy = gc_new<demo2>();
-		xx->cenas = gc_new < int > (321);
-		yy->cenas = xx->cenas;
+		{
+			auto xx = gc_new<demo>();
+
+			for (std::size_t i = 0; i < state.range(0); ++i) {
+				auto yy = gc_new<demo2>();
+				xx->cenas = gc_new<int>(321);
+				yy->cenas = xx->cenas;
+			}
+		}
+
+		_gc_service.collect();
 	}
 
-	_gc_service.collect();
-
-	exit (0);
 }
 
-BENCHMARK(gc_naive_sweep);
+BENCHMARK(gc_naive_mark_and_copy)->Range(8, 8 << 10);
 
 BENCHMARK_MAIN();
