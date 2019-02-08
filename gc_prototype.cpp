@@ -1,6 +1,5 @@
 #include <benchmark/benchmark.h>
 
-#include <deque>
 #include <memory>
 #include <limits>
 #include <stack>
@@ -8,6 +7,8 @@
 #include <zconf.h>
 #include <iostream>
 #include <cstring>
+
+#include <memory>
 
 namespace memory {
 
@@ -227,6 +228,8 @@ namespace memory {
 
 			if (node.next)
 				get(node.next).prev = node.prev;
+
+			node_free (address);
 		}
 
 		inline void node_push_front (table_address first, table_address address) {
@@ -578,7 +581,7 @@ struct demo2 {
 	gc < demo > obj_pointer;
 };
 
-void gc_collect (benchmark::State& state) {
+void gc_alloc_assign (benchmark::State& state) {
 
 	for (auto _ : state)
 	{
@@ -590,10 +593,114 @@ void gc_collect (benchmark::State& state) {
 			root->obj_pointer = obj;
 		}
 
+		state.PauseTiming();
+		_gc_service.collect();
+		state.ResumeTiming();
+	}
+}
+
+BENCHMARK(gc_alloc_assign)->Range(1 << 8, 1 << 16);
+
+void gc_collect (benchmark::State& state) {
+
+	for (auto _ : state)
+	{
+		state.PauseTiming();
+		auto root = gc_new<demo>();
+
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			auto obj = gc_new < demo2 > ();
+			obj->obj_pointer = root;
+			root->obj_pointer = obj;
+		}
+		state.ResumeTiming();
+
 		_gc_service.collect();
 	}
 }
 
-BENCHMARK(gc_collect)->Range(1 << 8, 1 << 15);
+BENCHMARK(gc_collect)->Range(1 << 8, 1 << 16);
+
+struct no_gc_demo {
+	no_gc_demo * cenas;
+};
+
+void no_gc_baseline (benchmark::State& state) {
+
+	std::vector < std::unique_ptr < no_gc_demo > > recovery;
+
+	for (auto _ : state)
+	{
+		auto root = new no_gc_demo();
+
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			auto obj = new no_gc_demo ();
+			obj->cenas = root;
+			root->cenas = obj;
+
+			state.PauseTiming();
+			recovery.emplace_back (obj);
+			state.ResumeTiming();
+		}
+
+		state.PauseTiming();
+		recovery.clear();
+		state.ResumeTiming();
+	}
+}
+
+BENCHMARK(no_gc_baseline)->Range(1 << 8, 1 << 16);
+
+void shared_ptr_alloc_baseline (benchmark::State& state) {
+
+	std::vector < std::shared_ptr < no_gc_demo > > recovery;
+
+	for (auto _ : state)
+	{
+		auto root = std::make_shared < no_gc_demo > ();
+
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			auto obj = std::make_shared < no_gc_demo > ();
+			obj->cenas = root.get();
+			root->cenas = obj.get();
+
+			state.PauseTiming();
+			recovery.emplace_back (obj);
+			state.ResumeTiming();
+		}
+
+		state.PauseTiming();
+		recovery.clear();
+		state.ResumeTiming();
+	}
+}
+
+BENCHMARK(shared_ptr_alloc_baseline)->Range(1 << 8, 1 << 16);
+
+void shared_ptr_collect_baseline (benchmark::State& state) {
+
+	std::vector < std::shared_ptr < no_gc_demo > > recovery;
+
+	for (auto _ : state)
+	{
+		state.PauseTiming();
+		auto root = std::make_shared < no_gc_demo > ();
+
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			auto obj = std::make_shared < no_gc_demo > ();
+			obj->cenas = root.get();
+			root->cenas = obj.get();
+
+			state.PauseTiming();
+			recovery.emplace_back (obj);
+			state.ResumeTiming();
+		}
+		state.ResumeTiming();
+
+		recovery.clear();
+	}
+}
+
+BENCHMARK(shared_ptr_collect_baseline)->Range(1 << 8, 1 << 16);
 
 BENCHMARK_MAIN();
