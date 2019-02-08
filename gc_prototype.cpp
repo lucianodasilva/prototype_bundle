@@ -44,7 +44,7 @@ namespace memory {
 	};
 
 	struct table_object {
-		page_address 		address;
+		uint8_t *			ptr;
 		table_address 		first_ref;
 		node_flags			flags;
 	};
@@ -54,6 +54,7 @@ namespace memory {
 	};
 
 	struct table_node {
+		table_address		prev;
 		table_address 		next;
 
 		union {
@@ -64,7 +65,7 @@ namespace memory {
 
 	struct alignas(8) page_header {
 		void (*destructor)(uint8_t *);
-		page_offset 		next;
+		page_header * 		next;
 		page_length			length;
 		table_address		node;
 
@@ -85,163 +86,167 @@ namespace memory {
 	public:
 
 		table () {
-			grow_table (65536 * 2);
+			table_grow (4096);
 		}
 
-		inline table_node & root () { return _data[0]; }
-
-		table_address add_obj () {
-			return reg (root().next);
+		inline table_node & get (table_address node) {
+			return _nodes [node];
 		}
 
-		table_address add_ref (table_address from_object, table_address to_object) {
+		inline table_node & root () { return get(_root_address); }
 
-			auto index = reg (_data [from_object].obj.first_ref);
-			_data [index].ref.to_object = to_object;
+		table_address add_obj_node () {
+			auto index = node_reserve();
+			auto first = root().next;
+
+			if (first)
+				node_push_front (first, index);
+
+			root().next = index;
+
 			return index;
 		}
 
-		void delete_obj (table_address object) {
+		table_address add_ref_node (table_address from_object, table_address to_object) {
+			auto index = node_reserve();
+			auto first = get(from_object).obj.first_ref;
+
+			if (first)
+				node_push_front(first, index);
+
+			get(from_object).obj.first_ref = index;
+			get(index).ref.to_object = to_object;
+
+			return index;
+		}
+
+		void rem_obj_node (table_address object) {
 			// clear refs
-			auto & node = get(object);
-
-			table_address next = node.obj.first_ref;
-
-			while (next) {
-				auto rem = next;
-				next = get(rem).next;
-				release(rem);
-			}
-
-			remove (root().next, object);
+			node_chain_free (get(object).obj.first_ref);
+			node_remove(object);
 		}
 
-		void delete_ref (table_address from_object, table_address ref) {
-			remove (_data[from_object].obj.first_ref, ref);
+		void rem_ref_node (table_address from_object, table_address ref) {
+
+			auto & from_node = get(from_object);
+
+			if (from_node.obj.first_ref == ref)
+				from_node.obj.first_ref = get(ref).next;
+
+			node_remove(ref);
 		}
 
-		table_node & get (table_address node) {
-			return _data [node];
-		}
+		struct iterator {
 
-		struct enumerator {
-			table_address address {0};
-
-			inline explicit operator bool () const { return address != 0; }
-
-			inline table_node & current (table * t) {
-				return t->_data [address];
+			inline iterator operator ++ () noexcept {
+				address = table_instance->get(address).next;
+				return { address, table_instance };
 			}
 
-			inline bool next (table const * t) {
-				address = t->_data [address].next;
-				return address != 0;
+			inline bool operator == (iterator const & it) const noexcept {
+				return it.address == address;
 			}
+
+			inline bool operator != (iterator const & it) const noexcept {
+				return !this->operator == (it);
+			}
+
+			inline table_address operator * () const {
+				return address;
+			}
+
+			table_address 	address {0};
+			table * 		table_instance {nullptr};
 		};
 
+		struct iterable {
+
+			inline iterator begin () { return { first, table_instance }; }
+			inline iterator end() { return {}; }
+
+			table_address 	first;
+			table * 		table_instance;
+		};
+
+		inline iterable objects () { return { root().next, this }; }
+		inline iterable refs (table_address object) { return { get(object).obj.first_ref, this }; }
+
 	private:
-		std::vector < table_node >	_data;
 
-		table_address				_free_head {1},
-									_free_tail {1};
-
-		inline table_address reg (table_address & root_next_ptr) {
-			auto index = reserve();
-			insert (root_next_ptr, index);
-			return index;
-		}
-
-		inline void insert (table_address & root_next_ptr, table_address address) {
-			auto & node 	= _data [address];
-
-			node.next = root_next_ptr;
-
-			root_next_ptr = address;
-		}
-
-		inline void remove (table_address & root_next_ptr, table_address address) {
-			enumerator en { root_next_ptr };
-
-			if (en.address == 0)
+		void table_grow (std::size_t new_size) {
+			if (_nodes.size() > new_size)
 				return;
 
-			if (root_next_ptr == address) {
-				auto & item = en.current(this);
-				root_next_ptr = item.next;
-			} else {
-				do {
-					auto &item = en.current(this);
+			_free_head = _nodes.size();
 
-					if (item.next == address) {
-						item.next = _data[address].next;
-						break;
-					}
-				} while (en.next(this));
+			// ignore root
+			if (_free_head == 0)
+				_free_head = 1;
+
+			_nodes.resize(new_size);
+
+			for (auto i = _free_head + 1; i < new_size; ++i) {
+				get(i - 1).next = i;
 			}
 
-			release (address);
+			get(new_size - 1).next = 0;
 		}
 
-		inline table_address reserve () {
-			auto index = _free_head;
+		inline table_address node_reserve () {
+			auto address = _free_head;
 
-			_free_head = _data[index].next;
-			if (_free_head == 0) {
-				_free_head = _free_tail;
-				grow_table (_data.size () * 2);
-			}
+			_free_head = get(address).next;
 
-			// clear node
-			_data [index] = {};
+			// if no more space in table "grow"
+			if (!_free_head)
+				table_grow(_nodes.size() * 2);
 
-			return index;
+			get(address) = {}; // TODO: think about if this is really needed
+
+			return address;
 		}
 
-		inline void release (table_address address) {
-			_data [address].next = _free_head;
+		inline void node_free (table_address address) {
+			get(address).next = _free_head;
 			_free_head = address;
 		}
 
-		void grow_table (std::size_t new_size) {
-			if (_data.size() > new_size)
-				return;
-
-			auto index = _data.size();
-			_data.resize(new_size);
-
-			// ignore root
-			if (index == 0)
-				index = 1;
-
-			while (index < new_size) {
-				_data [_free_tail].next = index;
-				_free_tail = index;
-				++index;
+		inline void node_chain_free (table_address first) {
+			while (first) {
+				table_address next = get(first).next;
+				node_free (first);
+				first = next;
 			}
-
-			_data [_free_tail].next = 0;
 		}
 
+		inline void node_remove (table_address address) {
+			auto & node = get(address);
+
+			if (node.prev)
+				get(node.prev).next = node.next;
+
+			if (node.next)
+				get(node.next).prev = node.prev;
+		}
+
+		inline void node_push_front (table_address first, table_address address) {
+			if (first)
+				get(first).prev = address;
+
+			get(address).next = first;
+		}
+
+		std::vector < table_node >	_nodes;
+		table_address const 		_root_address {0};
+		table_address				_free_head {1};
 	};
 
 	template < std::size_t capacity >
 	struct page {
 	public:
 
-		struct enumerator {
-			page_offset offset {0};
-
-			inline explicit operator bool () const { return offset != 0; }
-
-			inline page_header * current (page & p) {
-				return reinterpret_cast  < page_header * > (p._buffer + offset);
-			}
-
-			inline bool next (page & p) {
-				offset = current (p)->next;
-				return offset != 0;
-			}
-		};
+		page_header * begin () 	{ return reinterpret_cast < page_header * > (_buffer); }
+		page_header * end () 	{ return reinterpret_cast < page_header * > (_offset); }
 
 		page () = default;
 
@@ -265,60 +270,48 @@ namespace memory {
 		}
 
 		void reset () {
-			_offset = 0;
-		}
-
-		bool is_valid (page_offset offset) const noexcept {
-			return offset < _offset;
+			_offset = _buffer;
 		}
 
 		bool has_capacity (page_length length) const noexcept {
-			return capacity > (_offset + length);
+			return capacity > ((_offset - _buffer) + length);
 		}
 
 		bool empty () const noexcept {
-			return _offset == 0;
+			return _offset == _buffer;
 		}
 
-		page_header_allocated allocate (page_length length) {
-			auto offset = _offset;
+		page_header * allocate (page_length length) {
+			auto * header = end();
 
 			length = align_length(length, 8);
+
 			_offset += (length + sizeof(page_header));
 
-			auto * header = get_header (offset);
-
-			header->next = _offset;
+			header->next = end();
 			header->length = length;
 
-			return { *header, {offset} };
+			return header;
 		}
 
-		page_header_allocated move_allocated (page_header & header) {
-			auto alloc = allocate (header.length);
+		page_header * move_allocated (page_header * header) {
+			auto alloc_header = allocate (header->length);
 
-			alloc.header.node = header.node;
-			alloc.header.destructor = header.destructor;
+			alloc_header->node = header->node;
+			alloc_header->destructor = header->destructor;
 
 			// alignment issues
-			std::copy(header.begin(), header.end(), alloc.header.begin());
-			//memcpy(alloc.header.begin(), header.begin(), header.length);
+			std::copy(header->begin(), header->end(), alloc_header->begin());
 
-			return alloc;
-		}
-
-		inline page_header * get_header (page_offset offset) {
-			return reinterpret_cast < page_header * >  (_buffer + offset);
-		}
-
-		template < typename _t >
-		_t * get_ptr (page_offset offset) {
-			return reinterpret_cast < _t * > (_buffer + offset + sizeof(page_header));
+			return alloc_header;
 		}
 
 	private:
-		uint8_t * 		_buffer { reinterpret_cast < uint8_t * > (memalign (sysconf (_SC_PAGESIZE), capacity)) };
-		page_offset 	_offset { 0 };
+		uint8_t * _buffer {
+			reinterpret_cast < uint8_t * > (memalign (sysconf (_SC_PAGESIZE), capacity))
+		};
+
+		uint8_t * _offset { _buffer };
 	};
 
 	template < std::size_t page_size >
@@ -334,26 +327,12 @@ namespace memory {
 			pages.emplace_back ();
 		}
 
-		bool is_valid (page_address address) const noexcept {
-			return pages.size() < address.page && pages[address.page].is_valid(address.offset);
-		}
-
-		inline page_header * get_header (page_address address) {
-			return pages [address.page].get_header (address.offset);
-		}
-
-		template < typename _t >
-		inline _t * get_ptr (page_address address) {
-			return pages [address.page].template get_ptr < _t > (address.offset);
-		}
-
-		page_header_allocated allocate (page_length length) {
+		page_header * allocate (page_length length) {
 			if (!pages.back ().has_capacity (length)) {
 				pages.emplace_back();
 			}
 
 			auto alloc = pages.back ().allocate (length);
-			alloc.address.page = pages.size() - 1;
 
 			return alloc;
 		}
@@ -364,32 +343,33 @@ namespace memory {
 			work_page.reset();
 
 			for (auto & page : pages) {
+
 				if (page.empty())
 					continue;
 
-				typename page_type::enumerator en {};
+				auto * block_it = page.begin();
+				auto * block_end = page.end();
 
-				do {
-					if (!work_page.has_capacity(en.current(page)->length)) {
-						std::swap (pages[recycled_page], work_page);
+
+				while (block_it != block_end) {
+					if (!work_page.has_capacity(block_it->length)) {
+						std::swap (pages [recycled_page], work_page);
 						work_page.reset();
 						++recycled_page;
 					}
 
-					auto * header = en.current(page);
-
-					if (table.get(header->node).obj.flags.marked) {
+					if (table.get(block_it->node).obj.flags.marked) {
 						// move from one page to another if marked
-						auto alloc = work_page.move_allocated(*header);
-						alloc.address.page = recycled_page;
+						auto alloc = work_page.move_allocated(block_it);
 						// update new allocated address
-						table.get(header->node).obj.address = alloc.address;
+						table.get(block_it->node).obj.ptr = alloc->begin();
 					} else {
 						// delete object
-						header->dispose();
+						block_it->dispose();
 					}
 
-				} while (en.next(page));
+					block_it = block_it->next;
+				}
 
 				page.reset();
 			}
@@ -404,30 +384,25 @@ namespace memory {
 
 		template < typename _t, typename ... _args_tv >
 		inline table_address allocate (_args_tv && ... args) {
-			auto table_index = _table.add_obj();
+			auto table_index = _table.add_obj_node();
 
 			auto alloc = _paging.allocate (sizeof(_t));
 
 			// set destructor
-			alloc.header.destructor = [](uint8_t * ptr) {
+			alloc->destructor = [](uint8_t * ptr) {
 				reinterpret_cast < _t * > (ptr)->~_t();
 			};
 
-			alloc.header.node = table_index;
+			alloc->node = table_index;
 
 			auto & obj = _table.get (table_index);
-			obj.obj.address = alloc.address;
+			obj.obj.ptr = alloc->begin();
 
 			_reference_stack.push(table_index);
-			new (_paging.template get_ptr < _t > (alloc.address)) _t (std::forward < _args_tv > (args)...);
+			new (alloc->begin()) _t (std::forward < _args_tv > (args)...);
 			_reference_stack.pop();
 
 			return table_index;
-		}
-
-		template < typename _t >
-		inline _t * get_ptr (table_address obj) {
-			return _paging.template get_ptr < _t > (_table.get(obj).obj.address);
 		}
 
 		table_address get_root () const {
@@ -438,11 +413,11 @@ namespace memory {
 		}
 
 		table_address reg_ref (table_address from, table_address to) {
-			return _table.add_ref (from, to);
+			return _table.add_ref_node (from, to);
 		}
 
 		void del_ref (table_address from, table_address ref) {
-			_table.delete_ref (from, ref);
+			_table.rem_ref_node (from, ref);
 		}
 
 		inline table_node & get_table_node (table_address address) {
@@ -463,18 +438,13 @@ namespace memory {
 
 					node.obj.flags.marked = true;
 
-					// check existing references
-					table::enumerator en { node.obj.first_ref };
+					for (auto ref : _table.refs(address)) {
+						auto to_address = _table.get(ref).ref.to_object;
 
-					if (en) {
-						do {
-							table_address linked = en.current(&_table).ref.to_object;
+						if (_table.get(to_address).obj.flags.marked)
+							continue;
 
-							if (_table.get(linked).obj.flags.marked)
-								continue;
-
-							gray_nodes.push_back (linked);
-						} while (en.next(&_table));
+						gray_nodes.push_back(to_address);
 					}
 				}
 
@@ -485,21 +455,21 @@ namespace memory {
 			// sweep and compress
 			_paging.compress(_table);
 
+			black_nodes.resize(0);
+
 			// reset markers and clear nodes
-			table::enumerator obj_en;
+			for (auto obj_address : _table.objects()) {
+				auto & obj = _table.get(obj_address);
 
-			table_address prev = obj_en.address;
-			while (obj_en.next(&_table)) {
-
-				auto & node = obj_en.current(&_table);
-
-				if (node.obj.flags.marked) {
-					node.obj.flags.marked = false;
-					prev = obj_en.address;
+				if (obj.obj.flags.marked) {
+					obj.obj.flags.marked = false;
 				} else {
-					_table.delete_obj(obj_en.address);
-					obj_en.address = prev;
+					black_nodes.push_back (obj_address);
 				}
+			}
+
+			for (auto obj_address : black_nodes) {
+				_table.rem_obj_node (obj_address);
 			}
 		}
 
@@ -567,7 +537,7 @@ private:
 
 	inline _t * get () const noexcept {
 		if (_ref)
-			return _gc_service.get_ptr < _t > (_obj);
+			return reinterpret_cast < _t *> (_gc_service.get_table_node(_obj).obj.ptr);
 		else
 			return nullptr;
 	}
@@ -608,29 +578,10 @@ struct demo2 {
 	gc < demo > obj_pointer;
 };
 
-void gc_allocate_and_reference (benchmark::State& state) {
-
-	for (auto _ : state)
-	{
-        auto root = gc_new<demo>();
-
-        for (std::size_t i = 0; i < state.range(0); ++i) {
-            auto obj = gc_new < demo2 > ();
-            obj->obj_pointer = root;
-            root->obj_pointer = obj;
-        }
-
-        state.PauseTiming();
-        _gc_service.collect();
-        state.ResumeTiming();
-	}
-}
-
 void gc_collect (benchmark::State& state) {
 
 	for (auto _ : state)
 	{
-		state.PauseTiming();
 		auto root = gc_new<demo>();
 
 		for (std::size_t i = 0; i < state.range(0); ++i) {
@@ -638,13 +589,11 @@ void gc_collect (benchmark::State& state) {
 			obj->obj_pointer = root;
 			root->obj_pointer = obj;
 		}
-		state.ResumeTiming();
 
 		_gc_service.collect();
 	}
 }
 
-BENCHMARK(gc_allocate_and_reference)->Range(1 << 8, 1 << 15)->Unit(benchmark::TimeUnit::kMillisecond);
-BENCHMARK(gc_collect)->Range(1 << 8, 1 << 15)->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(gc_collect)->Range(1 << 8, 1 << 15);
 
 BENCHMARK_MAIN();
