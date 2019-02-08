@@ -32,6 +32,12 @@ namespace memory {
 	using page_offset = uint32_t;
 	using page_id = uint8_t;
 
+
+	constexpr page_length align_length (page_length length, uint32_t alignment)
+	{
+		return ((length + alignment - 1) / alignment) * alignment;
+	}
+
 	struct page_address {
 		page_offset	offset 	: 24;
 		page_id		page 	: 8;
@@ -56,14 +62,14 @@ namespace memory {
 		};
 	};
 
-	struct page_header {
+	struct alignas(8) page_header {
 		void (*destructor)(uint8_t *);
 		page_offset 		next;
 		page_length			length;
 		table_address		node;
 
 		inline uint8_t * begin () { return reinterpret_cast < uint8_t * > (this) + sizeof (page_header); }
-		inline uint8_t * end () { begin () + length; }
+		inline uint8_t * end () { return begin () + length; }
 
 		inline void dispose () {
 			(*destructor)(begin());
@@ -79,7 +85,7 @@ namespace memory {
 	public:
 
 		table () {
-			grow_table (512);
+			grow_table (65536 * 2);
 		}
 
 		inline table_node & root () { return _data[0]; }
@@ -276,7 +282,9 @@ namespace memory {
 
 		page_header_allocated allocate (page_length length) {
 			auto offset = _offset;
-			_offset += length + sizeof(page_header); // TODO: automatically align perhaps?
+
+			length = align_length(length, 8);
+			_offset += (length + sizeof(page_header));
 
 			auto * header = get_header (offset);
 
@@ -292,7 +300,9 @@ namespace memory {
 			alloc.header.node = header.node;
 			alloc.header.destructor = header.destructor;
 
+			// alignment issues
 			std::copy(header.begin(), header.end(), alloc.header.begin());
+			//memcpy(alloc.header.begin(), header.begin(), header.length);
 
 			return alloc;
 		}
@@ -588,33 +598,53 @@ inline gc < _t > gc_new(_args_tv &&... args) {
 	return gc < _t > { _gc_service.allocate < _t > (std::forward < _args_tv > (args)...) };
 }
 
+struct demo2;
+
 struct demo {
-	gc < int > cenas;
+	gc < demo2 > obj_pointer;
 };
 
 struct demo2 {
-	gc < int > cenas;
+	gc < demo > obj_pointer;
 };
 
-void gc_naive_mark_and_copy (benchmark::State& state) {
+void gc_allocate_and_reference (benchmark::State& state) {
 
 	for (auto _ : state)
 	{
-		{
-			auto xx = gc_new<demo>();
+        auto root = gc_new<demo>();
 
-			for (std::size_t i = 0; i < state.range(0); ++i) {
-				auto yy = gc_new<demo2>();
-				xx->cenas = gc_new<int>(321);
-				yy->cenas = xx->cenas;
-			}
+        for (std::size_t i = 0; i < state.range(0); ++i) {
+            auto obj = gc_new < demo2 > ();
+            obj->obj_pointer = root;
+            root->obj_pointer = obj;
+        }
+
+        state.PauseTiming();
+        _gc_service.collect();
+        state.ResumeTiming();
+	}
+}
+
+void gc_collect (benchmark::State& state) {
+
+	for (auto _ : state)
+	{
+		state.PauseTiming();
+		auto root = gc_new<demo>();
+
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			auto obj = gc_new < demo2 > ();
+			obj->obj_pointer = root;
+			root->obj_pointer = obj;
 		}
+		state.ResumeTiming();
 
 		_gc_service.collect();
 	}
-
 }
 
-BENCHMARK(gc_naive_mark_and_copy)->Range(8, 8 << 10);
+BENCHMARK(gc_allocate_and_reference)->Range(1 << 8, 1 << 15)->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(gc_collect)->Range(1 << 8, 1 << 15)->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
