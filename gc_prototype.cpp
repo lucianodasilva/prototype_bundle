@@ -9,6 +9,13 @@
 
 namespace memory {
 
+	namespace concept {
+
+		template<typename _to_t, typename _from_t>
+		using Assignable = typename std::enable_if < std::is_assignable<_to_t, _from_t>::value >::type;
+
+	}
+
 	namespace literals {
 		constexpr std::size_t operator ""_kb(unsigned long long v) {
 			return v << 10;
@@ -506,8 +513,19 @@ public:
 		return *this;
 	}
 
+	template <
+	    typename _cast_t,
+	    typename = memory::concept::Assignable <_cast_t, _t>
+	>
+	inline gc < _cast_t > as () const {
+		return gc < _cast_t > { _obj };
+	}
+
 	template<typename _dt, typename ... _args_tv>
 	friend gc<_dt> gc_new(_args_tv &&...);
+
+	template <typename>
+	friend struct gc;
 
 private:
 
@@ -560,6 +578,10 @@ struct demo {
 struct demo2 {
 	uint8_t xxx[object_size];
 	gc<demo> obj_pointer;
+};
+
+struct demo3 : public demo2 {
+
 };
 
 void gc_alloc_assign(benchmark::State &state) {
