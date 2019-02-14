@@ -3,9 +3,107 @@
 #include <memory>
 #include <stack>
 #include <malloc.h>
-#include <zconf.h>
 #include <iostream>
 #include <cstring>
+/*
+
+	template < typename _t >
+	struct paged_deque {
+	public:
+
+		paged_deque () {
+			add_page();
+		}
+
+		inline _t * aquire () {
+			auto node = _free_head;
+
+			_free_head = node->next;
+
+			// if no more space in table "grow"
+			if (!_free_head)
+				add_page();
+
+			*node = {}; // TODO: think about if this is really needed
+
+			return node;
+		}
+
+		inline void remove (_t * node) {
+			if (node->prev)
+				node->prev->next = node->next;
+
+			if (node->next)
+				node->next->prev = node->prev;
+
+			node_free(node);
+		}
+
+		inline void chain_release (_t * first) {
+			while (first) {
+				auto *next = first->next;
+				node_free(first);
+				first = next;
+			}
+		}
+
+		inline _t * insert_before (_t * node) {
+			auto * new_node = aquire ();
+
+			if (node->prev)
+				node->prev->next = new_node;
+
+			new_node->prev = node->prev;
+			new_node->next = node;
+
+			node->prev = new_node;
+
+			return new_node;
+		}
+
+		inline _t * insert_after (_t * node) {
+			auto * new_node = aquire ();
+
+			if (node->next)
+				node->next->prev = new_node;
+
+			new_node->prev = node->next;
+			new_node->prev = node;
+
+			node->next = new_node;
+
+			return new_node;
+		}
+
+	private:
+
+		void add_page() {
+			_pages.emplace_back(new _t [page_capacity]);
+
+			_free_head = _pages.back().get();
+			auto node_count = page_capacity;
+
+			for (std::size_t i = 1; i < node_count; ++i) {
+				_free_head[i - 1].next = _free_head + i;
+			}
+
+			_free_head[node_count - 1].next = nullptr;
+		}
+
+		inline void node_free(_t * node) {
+			*node = {};
+			node->next = _free_head;
+			_free_head = node;
+		}
+
+		std::vector<std::unique_ptr< _t []> >
+					_pages;
+		_t *		_free_head{nullptr};
+
+		static constexpr std::size_t
+					page_capacity {4096};
+	};
+*/
 
 namespace memory {
 
@@ -296,7 +394,7 @@ namespace memory {
 
 	private:
 		uint8_t *_buffer{
-			reinterpret_cast < uint8_t * > (memalign(sysconf(_SC_PAGESIZE), capacity))
+			reinterpret_cast < uint8_t * > (malloc(capacity))
 		};
 
 		uint8_t *_offset{_buffer};
@@ -592,7 +690,6 @@ void gc_alloc_assign(benchmark::State &state) {
 		for (std::size_t i = 0; i < state.range(0); ++i) {
 			auto obj = gc_new<demo2>();
 			obj->obj_pointer = root;
-			root->obj_pointer = obj;
 		}
 
 		state.PauseTiming();
@@ -612,7 +709,6 @@ void gc_collect(benchmark::State &state) {
 		for (std::size_t i = 0; i < state.range(0); ++i) {
 			auto obj = gc_new<demo2>();
 			obj->obj_pointer = root;
-			root->obj_pointer = obj;
 		}
 		state.ResumeTiming();
 
