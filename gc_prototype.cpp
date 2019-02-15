@@ -5,105 +5,7 @@
 #include <malloc.h>
 #include <iostream>
 #include <cstring>
-/*
-
-	template < typename _t >
-	struct paged_deque {
-	public:
-
-		paged_deque () {
-			add_page();
-		}
-
-		inline _t * aquire () {
-			auto node = _free_head;
-
-			_free_head = node->next;
-
-			// if no more space in table "grow"
-			if (!_free_head)
-				add_page();
-
-			*node = {}; // TODO: think about if this is really needed
-
-			return node;
-		}
-
-		inline void remove (_t * node) {
-			if (node->prev)
-				node->prev->next = node->next;
-
-			if (node->next)
-				node->next->prev = node->prev;
-
-			node_free(node);
-		}
-
-		inline void chain_release (_t * first) {
-			while (first) {
-				auto *next = first->next;
-				node_free(first);
-				first = next;
-			}
-		}
-
-		inline _t * insert_before (_t * node) {
-			auto * new_node = aquire ();
-
-			if (node->prev)
-				node->prev->next = new_node;
-
-			new_node->prev = node->prev;
-			new_node->next = node;
-
-			node->prev = new_node;
-
-			return new_node;
-		}
-
-		inline _t * insert_after (_t * node) {
-			auto * new_node = aquire ();
-
-			if (node->next)
-				node->next->prev = new_node;
-
-			new_node->prev = node->next;
-			new_node->prev = node;
-
-			node->next = new_node;
-
-			return new_node;
-		}
-
-	private:
-
-		void add_page() {
-			_pages.emplace_back(new _t [page_capacity]);
-
-			_free_head = _pages.back().get();
-			auto node_count = page_capacity;
-
-			for (std::size_t i = 1; i < node_count; ++i) {
-				_free_head[i - 1].next = _free_head + i;
-			}
-
-			_free_head[node_count - 1].next = nullptr;
-		}
-
-		inline void node_free(_t * node) {
-			*node = {};
-			node->next = _free_head;
-			_free_head = node;
-		}
-
-		std::vector<std::unique_ptr< _t []> >
-					_pages;
-		_t *		_free_head{nullptr};
-
-		static constexpr std::size_t
-					page_capacity {4096};
-	};
-*/
+#include <cmath>
 
 namespace memory {
 
@@ -122,6 +24,263 @@ namespace memory {
 		constexpr std::size_t operator ""_mb(unsigned long long v) {
 			return v << 20;
 		}
+	}
+
+	namespace buddy {
+
+
+		template < typename _t >
+		struct paged_deque {
+		public:
+
+			paged_deque () {
+				add_page();
+			}
+
+			inline _t * aquire () {
+				auto node = _free_head;
+
+				_free_head = node->next;
+
+				// if no more space in table "grow"
+				if (!_free_head)
+					add_page();
+
+				*node = {}; // TODO: think about if this is really needed
+
+				return node;
+			}
+
+			inline void remove (_t * node) {
+				if (node->prev)
+					node->prev->next = node->next;
+
+				if (node->next)
+					node->next->prev = node->prev;
+
+				node_free(node);
+			}
+
+			inline void chain_release (_t * first) {
+				while (first) {
+					auto *next = first->next;
+					node_free(first);
+					first = next;
+				}
+			}
+
+			inline _t * insert_before (_t * node) {
+				auto * new_node = aquire ();
+
+				if (node->prev)
+					node->prev->next = new_node;
+
+				new_node->prev = node->prev;
+				new_node->next = node;
+
+				node->prev = new_node;
+
+				return new_node;
+			}
+
+			inline _t * insert_after (_t * node) {
+				auto * new_node = aquire ();
+
+				if (node->next)
+					node->next->prev = new_node;
+
+				new_node->prev = node->next;
+				new_node->prev = node;
+
+				node->next = new_node;
+
+				return new_node;
+			}
+
+		private:
+
+			void add_page() {
+				_pages.emplace_back(new _t [page_capacity]);
+
+				_free_head = _pages.back().get();
+				auto node_count = page_capacity;
+
+				for (std::size_t i = 1; i < node_count; ++i) {
+					_free_head[i - 1].next = _free_head + i;
+				}
+
+				_free_head[node_count - 1].next = nullptr;
+			}
+
+			inline void node_free(_t * node) {
+				*node = {};
+				node->next = _free_head;
+				_free_head = node;
+			}
+
+			std::vector<std::unique_ptr< _t []> >
+				_pages;
+			_t *		_free_head{nullptr};
+
+			static constexpr std::size_t
+				page_capacity {4096}; // (for buddy should be memory page size / 32 / 2)
+		};
+
+		struct free_block;
+
+		struct header {
+			free_block * free_node;
+			bool free 				: 1;
+			uint8_t level 			: 7;
+
+			constexpr std::size_t size () const {
+				return 32U << level; // min size
+			}
+
+			uint8_t * begin () {
+				return reinterpret_cast < uint8_t * > (this) + sizeof (header);
+			}
+
+			uint8_t * end () {
+				return begin () + size();
+			}
+
+			header * get_buddy () {
+				return reinterpret_cast < header * > (
+					reinterpret_cast <uintptr_t> (this) ^ (32U << level)
+				);
+			}
+
+			inline static header * write (uint8_t * buffer, bool free, uint8_t level) {
+				return new (buffer) header { nullptr, free, level};
+			}
+		};
+
+		struct free_block {
+			free_block * prev;
+			free_block * next;
+
+			header * ptr;
+		};
+
+		template<class _t>
+		constexpr inline _t next_pow_2(_t v) {
+			_t bit_ceil = sizeof(_t) * 8;
+			_t bit = 1;
+
+			while (bit < bit_ceil) {
+				v |= (v >> bit);
+				bit = bit << 1;
+			}
+
+			return v + 1;
+		}
+
+		struct page {
+
+			paged_deque < free_block > free_nodes;
+
+			free_block * free_levels [4]; // 32 / 64 / 128 / 256 ( for testing should be enough )
+
+			std::unique_ptr < uint8_t [] > buffer { new uint8_t [256] };
+
+			page () {
+				// set starting header
+				auto max_level = 3U;
+				auto * h = header::write (buffer.get(), true, max_level);
+				auto * free_node = free_nodes.aquire();
+
+				free_levels [max_level] = free_node;
+				free_node->ptr = h;
+
+				h->free_node = free_node;
+			}
+
+			static constexpr inline std::size_t level_of (std::size_t length) {
+				return std::log2 (length) - std::log2 (32U); // min size
+			}
+
+			uint8_t * allocate (std::size_t len) {
+				uint8_t block_size = static_cast < uint8_t > (next_pow_2 (len + sizeof (header)));
+
+				auto expected_level = level_of (block_size);
+				auto level = expected_level;
+
+				// find smallest fitting free block
+				while (!free_levels[level]) {
+					++level;
+					if (level > 3) throw std::runtime_error ("out of memory");
+				}
+
+				auto * h = free_levels[level]->ptr;
+				h->free = false;
+
+				// split block until expected length
+				while (level > expected_level) {
+					// aquire and remove first free node
+					auto * node = free_levels [level];
+
+					free_nodes.remove(node);
+					free_levels [level] = node->next;
+
+					// split
+					--level;
+
+					h->level = level;
+
+					// set node info
+					auto * b = h->get_buddy();
+					b->free = true;
+					b->level = level;
+
+					// create node
+					free_block * buddy_node = nullptr;
+					if (free_levels[level]) {
+						buddy_node = free_nodes.insert_before(free_levels[level]);
+					} else {
+						buddy_node = free_nodes.aquire();
+					}
+
+					free_levels[level] = buddy_node;
+
+					// link
+					b->free_node = buddy_node;
+					buddy_node->ptr = b;
+				}
+
+				return h->begin();
+			}
+
+			void free (header * h) {
+				// coalescing nodes
+				while (h->level < 4 && h->get_buddy()->free) {
+					auto free_node = h->get_buddy()->free_node;
+
+					if (free_levels[h->level] == free_node)
+						free_levels[h->level] = free_node->next;
+
+					free_nodes.remove (free_node);
+					++(h->level);
+				}
+
+				h->free = true;
+				free_block * free_h = nullptr;
+				// create node
+				if (free_levels[h->level]) {
+					free_h = free_nodes.insert_before(free_levels[h->level]);
+				} else {
+					free_h = free_nodes.aquire();
+				}
+
+				free_levels[h->level] = free_h;
+
+				// link
+				h->free_node = free_h;
+				free_h->ptr = h;
+			}
+
+		};
+
 	}
 
 	struct node_flags {
