@@ -26,110 +26,134 @@ namespace memory {
 		}
 	}
 
-	namespace buddy {
+	template < typename _t >
+	struct node_pool {
+	public:
 
+		explicit node_pool (std::size_t page_capacity)
+			: _page_capacity{page_capacity}
+		{
+			add_page();
+		}
 
-		template < typename _t >
-		struct paged_deque {
-		public:
+		inline _t * reserve () noexcept {
+			auto * node = _free_head;
+			_free_head = node->next;
 
-			paged_deque () {
+			// if no more space in table "grow"
+			if (!_free_head)
 				add_page();
+
+			*node = {}; // TODO: think about if this is really needed
+
+			return node;
+		}
+
+		inline void release (_t * node) noexcept {
+			node->next = _free_head;
+			_free_head = node;
+		}
+
+	private:
+
+		inline void add_page () {
+			_node_pages.emplace_back (new _t [_page_capacity]);
+
+			format_top_page();
+		}
+
+		inline void format_top_page () {
+			auto * page = _node_pages.back().get();
+
+			page->prev = nullptr;
+
+			for (std::size_t i = 1; i < _page_capacity; ++i) {
+				page [i - 1].next = page + i;
 			}
 
-			inline _t * aquire () {
-				auto node = _free_head;
+			page [_page_capacity - 1].next = nullptr;
 
-				_free_head = node->next;
+			_free_head = page;
+		}
 
-				// if no more space in table "grow"
-				if (!_free_head)
-					add_page();
+		std::vector < std::unique_ptr < _t [] > >
+							_node_pages;
+		_t * 				_free_head { nullptr };
+		std::size_t const 	_page_capacity;
+	};
 
-				*node = {}; // TODO: think about if this is really needed
 
-				return node;
+	template < typename _t >
+	struct node_chain {
+	public:
+		_t * head;
+
+		bool empty () const noexcept {
+			return head == nullptr;
+		}
+
+		void prepend (_t * node) {
+			if (head) {
+				head->prev = node;
 			}
 
-			inline void remove (_t * node) {
-				if (node->prev)
-					node->prev->next = node->next;
+			node->next = head;
+			head = node;
+		}
 
-				if (node->next)
-					node->next->prev = node->prev;
+		void remove (_t * node) {
+			if (node->next)
+				node->next->prev = node->prev;
+			if (node->prev)
+				node->prev->next = node->next;
 
-				node_free(node);
+			if (node == head) {
+				head = node->next;
+				node->prev = nullptr;
+			}
+		}
+
+		void clear (node_pool < _t > & pool) {
+			while (head) {
+				auto * next = head->next;
+				pool.release (head);
+				head = next;
+			}
+		}
+
+		_t * pop () {
+			auto * node = head;
+			head = node->next;
+			return node;
+		}
+
+		struct iterator {
+			iterator &operator++() {
+				node = node->next;
+				return *this;
 			}
 
-			inline void chain_release (_t * first) {
-				while (first) {
-					auto *next = first->next;
-					node_free(first);
-					first = next;
-				}
+			bool operator!=(iterator const & it) {
+				return node != it.node;
 			}
 
-			inline _t * insert_before (_t * node) {
-				auto * new_node = aquire ();
-
-				if (node->prev)
-					node->prev->next = new_node;
-
-				new_node->prev = node->prev;
-				new_node->next = node;
-
-				node->prev = new_node;
-
-				return new_node;
+			_t & operator*() {
+				return *node;
 			}
 
-			inline _t * insert_after (_t * node) {
-				auto * new_node = aquire ();
-
-				if (node->next)
-					node->next->prev = new_node;
-
-				new_node->prev = node->next;
-				new_node->prev = node;
-
-				node->next = new_node;
-
-				return new_node;
-			}
-
-		private:
-
-			void add_page() {
-				_pages.emplace_back(new _t [page_capacity]);
-
-				_free_head = _pages.back().get();
-				auto node_count = page_capacity;
-
-				for (std::size_t i = 1; i < node_count; ++i) {
-					_free_head[i - 1].next = _free_head + i;
-				}
-
-				_free_head[node_count - 1].next = nullptr;
-			}
-
-			inline void node_free(_t * node) {
-				*node = {};
-				node->next = _free_head;
-				_free_head = node;
-			}
-
-			std::vector<std::unique_ptr< _t []> >
-				_pages;
-			_t *		_free_head{nullptr};
-
-			static constexpr std::size_t
-				page_capacity {4096}; // (for buddy should be memory page size / 32 / 2)
+			_t * node;
 		};
 
-		struct free_block;
+		iterator begin () { return {head}; }
+		iterator end () const { return { nullptr }; }
+	};
+
+	namespace buddy {
+
+		struct header_node;
 
 		struct header {
-			free_block * free_node;
+			void * user_data;
 			bool free 				: 1;
 			uint8_t level 			: 7;
 
@@ -156,11 +180,16 @@ namespace memory {
 			}
 		};
 
-		struct free_block {
-			free_block * prev;
-			free_block * next;
+		struct header_node {
+			header_node * prev;
+			header_node * next;
 
 			header * ptr;
+
+			inline void link (header * p) {
+				ptr = p;
+				p->user_data = this;
+			}
 		};
 
 		template<class _t>
@@ -177,55 +206,52 @@ namespace memory {
 		}
 
 		struct page {
+		public:
 
-			paged_deque < free_block > free_nodes;
-
-			free_block * free_levels [4]; // 32 / 64 / 128 / 256 ( for testing should be enough )
-
-			std::unique_ptr < uint8_t [] > buffer { new uint8_t [256] };
-
-			page () {
+			page (std::size_t capacity) :
+				_buffer_size {  32U << (level_of (capacity) + 1U)},
+				_top_level { level_of (_buffer_size) - 1 },
+				_free_nodes {_buffer_size / 32 / 2 },
+				_buffer{ new uint8_t [ _buffer_size ] },
+				_free_levels { new memory::node_chain < header_node > [_top_level + 1] }
+			{
 				// set starting header
-				auto max_level = 3U;
-				auto * h = header::write (buffer.get(), true, max_level);
-				auto * free_node = free_nodes.aquire();
+				auto * h = header::write (_buffer.get(), true, _top_level);
+				auto * node = _free_nodes.reserve();
 
-				free_levels [max_level] = free_node;
-				free_node->ptr = h;
+				_free_levels [_top_level].prepend (node);
 
-				h->free_node = free_node;
+				node->link (h);
 			}
 
 			static constexpr inline std::size_t level_of (std::size_t length) {
 				return std::log2 (length) - std::log2 (32U); // min size
 			}
 
-			uint8_t * allocate (std::size_t len) {
+			header * allocate (std::size_t len) {
+				// calculate block size
 				uint8_t block_size = static_cast < uint8_t > (next_pow_2 (len + sizeof (header)));
 
 				auto expected_level = level_of (block_size);
 				auto level = expected_level;
 
 				// find smallest fitting free block
-				while (!free_levels[level]) {
+				while (_free_levels[level].empty()) {
 					++level;
-					if (level > 3) throw std::runtime_error ("out of memory");
+					if (level > _top_level) throw std::runtime_error ("out of memory");
 				}
 
-				auto * h = free_levels[level]->ptr;
+				auto * free_h = _free_levels[level].pop();
+				auto * h = free_h->ptr;
+
+				_free_nodes.release (free_h);
+
 				h->free = false;
 
 				// split block until expected length
 				while (level > expected_level) {
-					// aquire and remove first free node
-					auto * node = free_levels [level];
-
-					free_nodes.remove(node);
-					free_levels [level] = node->next;
-
 					// split
 					--level;
-
 					h->level = level;
 
 					// set node info
@@ -234,51 +260,44 @@ namespace memory {
 					b->level = level;
 
 					// create node
-					free_block * buddy_node = nullptr;
-					if (free_levels[level]) {
-						buddy_node = free_nodes.insert_before(free_levels[level]);
-					} else {
-						buddy_node = free_nodes.aquire();
-					}
-
-					free_levels[level] = buddy_node;
+					auto * b_node = _free_nodes.reserve();
+					// add to free list
+					_free_levels [level].prepend (b_node);
 
 					// link
-					b->free_node = buddy_node;
-					buddy_node->ptr = b;
+					b_node->link(b);
 				}
 
-				return h->begin();
+				return h;
 			}
 
 			void free (header * h) {
 				// coalescing nodes
-				while (h->level < 4 && h->get_buddy()->free) {
-					auto free_node = h->get_buddy()->free_node;
+				while (h->level <= _top_level && h->get_buddy()->free) {
+					auto * b_node = reinterpret_cast < header_node * > (h->get_buddy()->user_data);
 
-					if (free_levels[h->level] == free_node)
-						free_levels[h->level] = free_node->next;
+					_free_levels [h->level].remove (b_node);
+					_free_nodes.release (b_node);
 
-					free_nodes.remove (free_node);
+					// rise one level
 					++(h->level);
 				}
 
 				h->free = true;
-				free_block * free_h = nullptr;
-				// create node
-				if (free_levels[h->level]) {
-					free_h = free_nodes.insert_before(free_levels[h->level]);
-				} else {
-					free_h = free_nodes.aquire();
-				}
+				auto * node = _free_nodes.reserve ();
+				node->link (h);
 
-				free_levels[h->level] = free_h;
-
-				// link
-				h->free_node = free_h;
-				free_h->ptr = h;
+				_free_levels[h->level].prepend (node);
 			}
 
+		private:
+			std::size_t const 					_buffer_size;
+			std::size_t const					_top_level;
+
+			memory::node_pool < header_node > 	_free_nodes; // (top level length / low level length / 2)
+			std::unique_ptr < uint8_t [] > 		_buffer;
+			std::unique_ptr < memory::node_chain < header_node > [] >
+												_free_levels;
 		};
 
 	}
@@ -300,22 +319,24 @@ namespace memory {
 	struct table_node;
 
 	struct table_object {
-		uint8_t *ptr;
-		table_node *first_ref;
-		node_flags flags;
+		node_chain < table_node >
+						ref_chain;
+		uint8_t *		ptr;
+		node_flags 		flags;
 	};
 
 	struct table_ref {
-		table_node *to_object;
+		table_node * 	to;
 	};
 
 	struct table_node {
-		table_node *prev;
-		table_node *next;
+		table_node * 	prev;
+		table_node * 	next;
 
 		union {
-			table_object obj;
-			table_ref ref;
+			table_object
+						obj;
+			table_ref 	ref;
 		};
 	};
 
@@ -339,150 +360,47 @@ namespace memory {
 	public:
 
 		table() {
-			add_page();
+			_root = _available_nodes.reserve ();
 		}
 
-		inline table_node *get_root() { return _node_pages.front().get(); }
+		inline table_node * get_root() const { return _root; }
 
 		table_node *add_obj_node() {
-			auto *node = node_reserve();
-			auto *root = get_root();
-
-			if (root->next)
-				node_push_front(root->next, node);
-
-			root->next = node;
+			auto * node = _available_nodes.reserve ();
+			_objects.prepend(node);
 
 			return node;
 		}
 
 		table_node *add_ref_node(table_node *from_object, table_node *to_object) {
-			auto *node = node_reserve();
-			auto *first = from_object->obj.first_ref;
+			auto * node = _available_nodes.reserve();
 
-			if (first)
-				node_push_front(first, node);
-
-			from_object->obj.first_ref = node;
-			node->ref.to_object = to_object;
+			from_object->obj.ref_chain.prepend(node);
+			node->ref.to = to_object;
 
 			return node;
 		}
 
 		void rem_obj_node(table_node *object) {
-			// clear refs
-			node_chain_free(object->obj.first_ref);
-			node_remove(object);
+			// -- clear refs --
+			// theoretically they should clear themselves
+			// object->obj.ref_chain.clear (_available_nodes);
+			// remove object
+			_objects.remove(object);
+			_available_nodes.release(object);
 		}
 
 		void rem_ref_node(table_node *from_object, table_node *ref) {
-			if (from_object->obj.first_ref == ref)
-				from_object->obj.first_ref = ref->next;
-
-			node_remove(ref);
+			from_object->obj.ref_chain.remove (ref);
+			_available_nodes.release (ref);
 		}
 
-		struct iterator {
-
-			iterator &operator++() {
-				node = node->next;
-				return *this;
-			}
-
-			bool operator!=(iterator const &it) {
-				return node != it.node;
-			}
-
-			table_node &operator*() {
-				return *node;
-			}
-
-			table_node *node;
-		};
-
-		struct iterable {
-
-			inline iterator begin() { return {first}; }
-
-			inline iterator end() { return {nullptr}; }
-
-			table_node *first;
-		};
-
-		inline iterable objects() { return {get_root()->next}; }
-
-		inline iterable refs(table_node *object) const { return {object->obj.first_ref}; }
+		inline node_chain < table_node > & objects() { return _objects; }
 
 	private:
-
-		static constexpr std::size_t table_page_capacity = 0xFFFF;
-
-		void add_page() {
-			_node_pages.emplace_back(new table_node[table_page_capacity]);
-
-			_free_head = _node_pages.back().get();
-			auto node_count = table_page_capacity;
-
-			// ignore root
-			if (_free_head == _node_pages.front().get()) {
-				++_free_head;
-				--node_count;
-			}
-
-			for (std::size_t i = 1; i < node_count; ++i) {
-				_free_head[i - 1].next = _free_head + i;
-			}
-
-			_free_head[node_count - 1].next = nullptr;
-		}
-
-		inline table_node *node_reserve() {
-			auto node = _free_head;
-
-			_free_head = node->next;
-
-			// if no more space in table "grow"
-			if (!_free_head)
-				add_page();
-
-			*node = {}; // TODO: think about if this is really needed
-
-			return node;
-		}
-
-		inline void node_free(table_node *node) {
-			node->next = _free_head;
-			_free_head = node;
-		}
-
-		inline void node_chain_free(table_node *first) {
-			while (first) {
-				auto *next = first->next;
-				node_free(first);
-				first = next;
-			}
-		}
-
-		inline void node_remove(table_node *node) {
-			if (node->prev)
-				node->prev->next = node->next;
-
-			if (node->next)
-				node->next->prev = node->prev;
-
-			node_free(node);
-		}
-
-		inline void node_push_front(table_node *first, table_node *node) {
-			if (first)
-				first->prev = node;
-
-			node->next = first;
-		}
-
-		std::vector<std::unique_ptr<table_node[]> >
-			_node_pages;
-		table_node *_free_head{nullptr};
+		node_pool < table_node > 	_available_nodes 	{ 4096 };
+		node_chain < table_node > 	_objects 			{ nullptr };
+		table_node * 				_root 				{ nullptr };
 	};
 
 	template<std::size_t capacity>
@@ -635,8 +553,8 @@ namespace memory {
 
 		template<typename _t, typename ... _args_tv>
 		inline table_node *allocate(_args_tv &&... args) {
-			auto *node = _table.add_obj_node();
-			auto alloc = _paging.allocate(sizeof(_t));
+			auto * node = _table.add_obj_node();
+			auto alloc	= _paging.allocate(sizeof(_t));
 
 			// set destructor
 			alloc->destructor = [](uint8_t *ptr) { reinterpret_cast < _t * >(ptr)->~_t(); };
@@ -655,24 +573,19 @@ namespace memory {
 		}
 
 		table_node *get_root() const {
-			return _active_root;
+			return _active_root ? _active_root : (_active_root = _table.get_root());
 		}
 
-		table_node *reg_ref(table_node *from, table_node *to) {
-			if (!from)
-				from = _table.get_root();
-
+		table_node * reg_ref(table_node *from, table_node *to) {
 			return _table.add_ref_node(from, to);
 		}
 
 		void del_ref(table_node *from, table_node *ref) {
-			if (!from)
-				from = _table.get_root();
-
-			_table.rem_ref_node(from, ref);
+				_table.rem_ref_node(from, ref);
 		}
 
 		void collect() {
+
 			std::vector<table_node *> gray_nodes;
 			std::vector<table_node *> black_nodes;
 
@@ -680,17 +593,19 @@ namespace memory {
 
 			// mark
 			while (!black_nodes.empty()) {
-				for (auto *node: black_nodes) {
+				for (auto * node: black_nodes)
+				{
+					table_object & obj = node->obj;
 
-					node->obj.flags.marked = true;
+					obj.flags.marked = true;
 
-					for (auto &ref : _table.refs(node)) {
-						auto *object = ref.ref.to_object;
+					for (auto & ref : obj.ref_chain) {
+						auto * to = ref.ref.to;
 
-						if (object->obj.flags.marked)
+						if (to->obj.flags.marked)
 							continue;
 
-						gray_nodes.push_back(object);
+						gray_nodes.push_back(to);
 					}
 				}
 
@@ -704,7 +619,7 @@ namespace memory {
 			black_nodes.resize(0);
 
 			// reset markers and clear nodes
-			for (auto &obj : _table.objects()) {
+			for (auto & obj : _table.objects()) {
 
 				if (!obj.obj.flags.marked)
 					black_nodes.push_back(&obj);
@@ -720,18 +635,115 @@ namespace memory {
 	private:
 		static thread_local table_node *_active_root;
 
-		paging<page_capacity> _paging;
-		table _table;
+		paging<page_capacity>
+				_paging;
+		table 	_table;
 	};
 
 	template<std::size_t page_capacity>
-	thread_local table_node *collector<page_capacity>::_active_root{nullptr};
+	thread_local table_node *collector<page_capacity>::_active_root = { nullptr };
+
+
+	template<std::size_t page_capacity>
+	struct collector_buddy {
+	public:
+
+		template<typename _t, typename ... _args_tv>
+		inline table_node *allocate(_args_tv &&... args) {
+			auto * node = _table.add_obj_node();
+			auto alloc	= _page.allocate (sizeof (_t));
+
+			// set destructor
+			void (*destructor)(uint8_t *) = [](uint8_t *ptr) { reinterpret_cast < _t * >(ptr)->~_t(); };
+			alloc->user_data = (void *)destructor;
+
+			node->obj.ptr = alloc->begin();
+
+			auto *prev_root = _active_root;
+			_active_root = node;
+			new(node->obj.ptr) _t(std::forward<_args_tv>(args)...);
+			_active_root = prev_root;
+			return node;
+		}
+
+		table_node *get_root() const {
+			return _active_root ? _active_root : (_active_root = _table.get_root());
+		}
+
+		table_node * reg_ref(table_node *from, table_node *to) {
+			return _table.add_ref_node(from, to);
+		}
+
+		void del_ref(table_node *from, table_node *ref) {
+			_table.rem_ref_node(from, ref);
+		}
+
+		void collect() {
+
+			std::vector<table_node *> gray_nodes;
+			std::vector<table_node *> black_nodes;
+
+			black_nodes.push_back(_table.get_root());
+
+			// mark
+			while (!black_nodes.empty()) {
+				for (auto * node: black_nodes)
+				{
+					table_object & obj = node->obj;
+
+					obj.flags.marked = true;
+
+					for (auto & ref : obj.ref_chain) {
+						auto * to = ref.ref.to;
+
+						if (to->obj.flags.marked)
+							continue;
+
+						gray_nodes.push_back(to);
+					}
+				}
+
+				std::swap(gray_nodes, black_nodes);
+				gray_nodes.resize(0);
+			}
+
+			black_nodes.resize(0);
+
+			// reset markers and clear nodes
+			for (auto & obj : _table.objects()) {
+
+				if (!obj.obj.flags.marked)
+					black_nodes.push_back(&obj);
+
+				obj.obj.flags.marked = false;
+			}
+
+			for (auto obj_address : black_nodes) {
+				auto * header = reinterpret_cast < buddy::header * > (obj_address->obj.ptr - sizeof (buddy::header));
+				reinterpret_cast < void (*)(uint8_t * p) > (header->user_data)(header->begin());
+
+				_page.free(header);
+				_table.rem_obj_node(obj_address);
+			}
+		}
+
+	private:
+		static thread_local table_node *_active_root;
+
+		buddy::page
+				_page { page_capacity };
+		table 	_table;
+	};
+
+	template<std::size_t page_capacity>
+	thread_local table_node *collector_buddy<page_capacity>::_active_root = { nullptr };
 
 }
 
 using namespace memory::literals;
+memory::collector<8_mb> _gc_service;
 
-memory::collector<16_mb> _gc_service;
+memory::collector_buddy<8_mb> _gc_buddy_service;
 
 template<typename _t>
 struct gc {
@@ -745,22 +757,20 @@ public:
 
 	inline gc() = default;
 
-	~gc() {
-		if (_ref)
-			_gc_service.del_ref(_root, _ref);
-	}
-
-	template<typename _dt>
-	inline explicit gc(
-		gc<_dt> const &v,
-		std::enable_if_t<std::is_base_of<_t, _dt>::value> = {}
+	template<typename _dt, typename = memory::concept::Assignable <_dt, _t> >
+	inline gc(
+		gc<_dt> const &v
 	) {
 		copy(v);
 	}
 
-	template<typename _dt, typename std::enable_if<
-		std::is_base_of<_t, _dt>::value || std::is_same<_t, _dt>::value>::type = 0>
-	inline gc &operator=(gc<_dt> const &v) {
+	inline gc ( gc const & v) {
+		copy (v);
+	}
+
+	template<typename _dt,
+		typename = memory::concept::Assignable <_dt, _t>
+	> inline gc &operator=(gc<_dt> const &v) {
 		copy(v);
 		return *this;
 	}
@@ -768,6 +778,34 @@ public:
 	inline gc &operator=(gc const &v) {
 		copy(v);
 		return *this;
+	}
+
+	template<typename _dt, typename = memory::concept::Assignable <_dt, _t> >
+	inline gc(
+		gc<_dt> && v
+	) {
+		this->swap (v);
+	}
+
+	inline gc ( gc && v) {
+		this->swap (v);
+	}
+
+	template<typename _dt,
+		typename = memory::concept::Assignable <_dt, _t>
+	> inline gc &operator=(gc<_dt> &&v) {
+		this->swap (v);
+		return *this;
+	}
+
+	inline gc &operator=(gc && v) {
+		this->swap (v);
+		return *this;
+	}
+
+	~gc() {
+		if (_ref)
+			_gc_service.del_ref(_root, _ref);
 	}
 
 	template <
@@ -784,6 +822,12 @@ public:
 	template <typename>
 	friend struct gc;
 
+	template < typename _dt >
+	void swap (gc < _dt > & g) {
+		std::swap (_obj, g._obj);
+		std::swap (_ref, g._ref);
+	}
+
 private:
 
 	inline explicit gc(memory::table_node *node) :
@@ -791,7 +835,7 @@ private:
 		_ref{_gc_service.reg_ref(_root, node)} {}
 
 	inline _t *get() const noexcept {
-		if (_ref)
+		if (_obj)
 			return reinterpret_cast < _t *> (_obj->obj.ptr);
 		else
 			return nullptr;
@@ -820,16 +864,141 @@ private:
 
 template<typename _t, typename ... _args_tv>
 inline gc<_t> gc_new(_args_tv &&... args) {
-	return gc<_t>{_gc_service.allocate<_t>(std::forward<_args_tv>(args)...)};
+	return gc<_t> {_gc_service.allocate<_t>(std::forward<_args_tv>(args)...)};
 }
 
-constexpr uint32_t object_size = 4;//1_kb;
+template<typename _t>
+struct gc_buddy {
+public:
+
+	inline _t *operator->() { return get(); }
+
+	inline explicit operator bool() const noexcept {
+		return _obj == nullptr;
+	}
+
+	inline gc_buddy() = default;
+
+	template<typename _dt, typename = memory::concept::Assignable <_dt, _t> >
+	inline gc_buddy(
+		gc_buddy<_dt> const &v
+	) {
+		copy(v);
+	}
+
+	inline gc_buddy ( gc_buddy const & v) {
+		copy (v);
+	}
+
+	template<typename _dt,
+		typename = memory::concept::Assignable <_dt, _t>
+	> inline gc_buddy &operator=(gc_buddy<_dt> const &v) {
+		copy(v);
+		return *this;
+	}
+
+	inline gc_buddy &operator=(gc_buddy const &v) {
+		copy(v);
+		return *this;
+	}
+
+	template<typename _dt, typename = memory::concept::Assignable <_dt, _t> >
+	inline gc_buddy(
+		gc<_dt> && v
+	) {
+		this->swap (v);
+	}
+
+	inline gc_buddy ( gc_buddy && v) {
+		this->swap (v);
+	}
+
+	template<typename _dt,
+		typename = memory::concept::Assignable <_dt, _t>
+	> inline gc_buddy &operator=(gc<_dt> &&v) {
+		this->swap (v);
+		return *this;
+	}
+
+	inline gc_buddy &operator=(gc_buddy && v) {
+		this->swap (v);
+		return *this;
+	}
+
+	~gc_buddy() {
+		if (_ref)
+			_gc_buddy_service.del_ref(_root, _ref);
+	}
+
+	template <
+		typename _cast_t,
+		typename = memory::concept::Assignable <_cast_t, _t>
+	>
+	inline gc_buddy < _cast_t > as () const {
+		return gc_buddy < _cast_t > { _obj };
+	}
+
+	template<typename _dt, typename ... _args_tv>
+	friend gc_buddy<_dt> gc_buddy_new(_args_tv &&...);
+
+	template <typename>
+	friend struct gc_buddy;
+
+	template < typename _dt >
+	void swap (gc_buddy < _dt > & g) {
+		std::swap (_obj, g._obj);
+		std::swap (_ref, g._ref);
+	}
+
+private:
+
+	inline explicit gc_buddy(memory::table_node *node) :
+		_obj{node},
+		_ref{_gc_buddy_service.reg_ref(_root, node)} {}
+
+	inline _t *get() const noexcept {
+		if (_obj)
+			return reinterpret_cast < _t *> (_obj->obj.ptr);
+		else
+			return nullptr;
+	}
+
+	template<typename _dt>
+	inline void copy(gc_buddy<_dt> const &v) {
+		if (_ref)
+			_gc_buddy_service.del_ref(_root, _ref);
+
+		if (v._ref) {
+			_obj = v._obj;
+			_ref = _gc_buddy_service.reg_ref(_root, _obj);
+		} else {
+			_obj = nullptr;
+			_ref = nullptr;
+		}
+	}
+
+	memory::table_node *const _root{_gc_buddy_service.get_root()};
+
+	memory::table_node *_ref{nullptr};
+	memory::table_node *_obj{nullptr};
+
+};
+
+template<typename _t, typename ... _args_tv>
+inline gc_buddy<_t> gc_buddy_new (_args_tv &&... args) {
+	return gc_buddy<_t> {_gc_buddy_service.allocate<_t>(std::forward<_args_tv>(args)...)};
+}
+
+
+constexpr uint32_t object_size = 16;//1_kb;
 
 struct demo2;
 
 struct demo {
 	uint8_t xxx[object_size];
 	gc<demo2> obj_pointer;
+
+	gc<demo> to;
 };
 
 struct demo2 {
@@ -840,15 +1009,16 @@ struct demo2 {
 struct demo3 : public demo2 {
 
 };
-
+/*
 void gc_alloc_assign(benchmark::State &state) {
 
+	auto root = gc_new<demo>();
+	auto node = root;
+
 	for (auto _ : state) {
-		auto root = gc_new<demo>();
 
 		for (std::size_t i = 0; i < state.range(0); ++i) {
-			auto obj = gc_new<demo2>();
-			obj->obj_pointer = root;
+			node->to = gc_new < demo > ();
 		}
 
 		state.PauseTiming();
@@ -857,26 +1027,53 @@ void gc_alloc_assign(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(gc_alloc_assign)->Range(1 << 8, 1 << 16);
+BENCHMARK(gc_alloc_assign)->Range(1 << 8, 1 << 18);
 
 void gc_collect(benchmark::State &state) {
 
+	auto root = gc_new<demo>();
+	auto node = root;
+
 	for (auto _ : state) {
 		state.PauseTiming();
-		auto root = gc_new<demo>();
 
 		for (std::size_t i = 0; i < state.range(0); ++i) {
-			auto obj = gc_new<demo2>();
-			obj->obj_pointer = root;
+			node->to = gc_new < demo > ();
 		}
+
 		state.ResumeTiming();
 
 		_gc_service.collect();
 	}
 }
 
-BENCHMARK(gc_collect)->Range(1 << 8, 1 << 16);
+BENCHMARK(gc_collect)->Range(1 << 8, 1 << 18);
+*/
 
+struct demo_buddy {
+	uint8_t xxx[object_size];
+	gc_buddy<demo_buddy> to;
+};
+
+void gc_buddy_alloc_assign(benchmark::State &state) {
+	auto root = gc_buddy_new<demo_buddy>();
+	auto node = root;
+
+	for (auto _ : state) {
+
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			node->to = gc_buddy_new<demo_buddy>();
+		}
+
+		state.PauseTiming();
+		_gc_buddy_service.collect();
+		state.ResumeTiming();
+	}
+}
+
+BENCHMARK(gc_buddy_alloc_assign)->Range(1 << 8, 1 << 18);
+
+/*
 struct no_gc_demo {
 	uint8_t xxx[object_size];
 	no_gc_demo *cenas;
@@ -956,5 +1153,5 @@ void shared_ptr_collect_baseline(benchmark::State &state) {
 }
 
 BENCHMARK(shared_ptr_collect_baseline)->Range(1 << 8, 1 << 16);
-
+*/
 BENCHMARK_MAIN();
