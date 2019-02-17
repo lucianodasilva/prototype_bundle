@@ -3,3 +3,6 @@ cmake-build-debug/
 cmake-build-release/
 .vscode/
 build/
+/.vs
+/cmake-build-relwithdebinfo
+/CMakeSettings.json

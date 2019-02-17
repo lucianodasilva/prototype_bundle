@@ -6,6 +6,7 @@
 #include <iostream>
 #include <cstring>
 #include <cmath>
+#include <cstdint>
 
 namespace memory {
 
@@ -115,9 +116,9 @@ namespace memory {
 
 		void clear (node_pool < _t > & pool) {
 			while (head) {
-				auto * next = head->next;
-				pool.release (head);
-				head = next;
+				auto * node = head;
+				head = node->next;
+				pool.release (node);
 			}
 		}
 
@@ -169,10 +170,8 @@ namespace memory {
 				return begin () + size();
 			}
 
-			header * get_buddy () {
-				return reinterpret_cast < header * > (
-					reinterpret_cast <uintptr_t> (this) ^ (32U << level)
-				);
+			inline static header * from_ptr(uint8_t * buffer) {
+				return reinterpret_cast <header *> (buffer - sizeof(header));
 			}
 
 			inline static header * write (uint8_t * buffer, bool free, uint8_t level) {
@@ -209,12 +208,16 @@ namespace memory {
 		public:
 
 			page (std::size_t capacity) :
-				_buffer_size {  32U << (level_of (capacity) + 1U)},
-				_top_level { level_of (_buffer_size) - 1 },
-				_free_nodes {_buffer_size / 32 / 2 },
-				_buffer{ new uint8_t [ _buffer_size ] },
+				_buffer_size { 16 << 20 },
+				_top_level { level_of (_buffer_size) },
+				_free_nodes { 16 << 20 / 32 / 2 },
+				_buffer{ new uint8_t [16 << 20] },
 				_free_levels { new memory::node_chain < header_node > [_top_level + 1] }
 			{
+				// clean up stuff 
+				for (int i = 0; i <= _top_level; ++i) {
+					_free_levels[i].head = nullptr;
+				}
 				// set starting header
 				auto * h = header::write (_buffer.get(), true, _top_level);
 				auto * node = _free_nodes.reserve();
@@ -224,13 +227,13 @@ namespace memory {
 				node->link (h);
 			}
 
-			static constexpr inline std::size_t level_of (std::size_t length) {
+			static inline std::size_t level_of (std::size_t length) {
 				return std::log2 (length) - std::log2 (32U); // min size
 			}
 
 			header * allocate (std::size_t len) {
 				// calculate block size
-				uint8_t block_size = static_cast < uint8_t > (next_pow_2 (len + sizeof (header)));
+				std::size_t block_size = next_pow_2 (len + sizeof (header));
 
 				auto expected_level = level_of (block_size);
 				auto level = expected_level;
@@ -241,56 +244,90 @@ namespace memory {
 					if (level > _top_level) throw std::runtime_error ("out of memory");
 				}
 
-				auto * free_h = _free_levels[level].pop();
-				auto * h = free_h->ptr;
-
-				_free_nodes.release (free_h);
-
-				h->free = false;
-
+				auto * h_node = _free_levels[level].pop();
+				auto * h = h_node->ptr;
+				alloc_block(h);
+				
 				// split block until expected length
 				while (level > expected_level) {
-					// split
+					// split node
+					// -- demote
 					--level;
 					h->level = level;
 
-					// set node info
-					auto * b = h->get_buddy();
-					b->free = true;
+					// set buddy info
+					auto * b = find_buddy(h);
+					
 					b->level = level;
-
-					// create node
-					auto * b_node = _free_nodes.reserve();
-					// add to free list
-					_free_levels [level].prepend (b_node);
-
-					// link
-					b_node->link(b);
+					free_block(b);
 				}
 
 				return h;
 			}
 
 			void free (header * h) {
+				std::cout << "<< coalescing nodes >>" << std::endl;
 				// coalescing nodes
-				while (h->level <= _top_level && h->get_buddy()->free) {
-					auto * b_node = reinterpret_cast < header_node * > (h->get_buddy()->user_data);
+				auto * buddy = find_buddy (h);
 
-					_free_levels [h->level].remove (b_node);
-					_free_nodes.release (b_node);
+				while (buddy && buddy->free) {
+					std::cout << " -- merge" << std::endl;
+					// merge block
+					// -- remove available node
+					alloc_block(buddy);
 
-					// rise one level
+					// -- move to left most header
+					if (buddy < h) {
+						std::cout << " ---- move left" << std::endl;
+						h = buddy;
+					}
+
+					// -- promote level
 					++(h->level);
+
+					buddy = find_buddy(h);
 				}
 
-				h->free = true;
-				auto * node = _free_nodes.reserve ();
-				node->link (h);
-
-				_free_levels[h->level].prepend (node);
+				// release header
+				free_block(h);
+				std::cout << "<< coalescing done >>" << std::endl;
 			}
 
 		private:
+
+			inline void alloc_block(header * h) {
+				h->free = false;
+
+				auto * node = reinterpret_cast <header_node *> (h->user_data);
+				_free_levels [h->level].remove(node);
+
+				_free_nodes.release(node);
+			}
+
+			inline void free_block(header * h) {
+				h->free = true;
+
+				auto * node = _free_nodes.reserve();
+				_free_levels[h->level].prepend(node);
+
+				node->link(h);
+			}
+
+			header * find_buddy (header * h) {
+				if (h->level == _top_level)
+					return nullptr;
+
+				auto diff = reinterpret_cast < uint8_t * >(h) - _buffer.get();
+				
+				std::cout << "orig: " << diff;
+
+				diff ^= (32U << h->level);
+
+				std::cout << " buddy: " << diff << " level: " << static_cast < int > (h->level) << std::endl;
+
+				return reinterpret_cast<header * > (_buffer.get() + diff);
+			}
+
 			std::size_t const 					_buffer_size;
 			std::size_t const					_top_level;
 
@@ -327,6 +364,7 @@ namespace memory {
 
 	struct table_ref {
 		table_node * 	to;
+		bool *			remote_active;
 	};
 
 	struct table_node {
@@ -372,25 +410,33 @@ namespace memory {
 			return node;
 		}
 
-		table_node *add_ref_node(table_node *from_object, table_node *to_object) {
+		table_node *add_ref_node(table_node *from_object, table_node *to_object, bool * remote_active) {
 			auto * node = _available_nodes.reserve();
 
 			from_object->obj.ref_chain.prepend(node);
 			node->ref.to = to_object;
+			node->ref.remote_active = remote_active;
+
+			*remote_active = true;
 
 			return node;
 		}
 
 		void rem_obj_node(table_node *object) {
 			// -- clear refs --
-			// theoretically they should clear themselves
-			// object->obj.ref_chain.clear (_available_nodes);
+			// theoretically they should clear themselves but...
+			for (auto & ref : object->obj.ref_chain){
+				*(ref.ref.remote_active) = false; // mark as "inactive"
+			}
+
+			object->obj.ref_chain.clear (_available_nodes);
 			// remove object
 			_objects.remove(object);
 			_available_nodes.release(object);
 		}
 
 		void rem_ref_node(table_node *from_object, table_node *ref) {
+			*(ref->ref.remote_active) = false;
 			from_object->obj.ref_chain.remove (ref);
 			_available_nodes.release (ref);
 		}
@@ -663,6 +709,7 @@ namespace memory {
 			_active_root = node;
 			new(node->obj.ptr) _t(std::forward<_args_tv>(args)...);
 			_active_root = prev_root;
+
 			return node;
 		}
 
@@ -670,8 +717,8 @@ namespace memory {
 			return _active_root ? _active_root : (_active_root = _table.get_root());
 		}
 
-		table_node * reg_ref(table_node *from, table_node *to) {
-			return _table.add_ref_node(from, to);
+		table_node * reg_ref(table_node *from, table_node *to, bool * remote_active) {
+			return _table.add_ref_node(from, to, remote_active);
 		}
 
 		void del_ref(table_node *from, table_node *ref) {
@@ -719,10 +766,15 @@ namespace memory {
 			}
 
 			for (auto obj_address : black_nodes) {
-				auto * header = reinterpret_cast < buddy::header * > (obj_address->obj.ptr - sizeof (buddy::header));
+				// get header
+				auto * header = buddy::header::from_ptr(obj_address->obj.ptr);
+				// call destructor
 				reinterpret_cast < void (*)(uint8_t * p) > (header->user_data)(header->begin());
 
+				// dealocate from page
 				_page.free(header);
+
+				// remove node from table
 				_table.rem_obj_node(obj_address);
 			}
 		}
@@ -926,7 +978,7 @@ public:
 	}
 
 	~gc_buddy() {
-		if (_ref)
+		if (_ref && _remote_active)
 			_gc_buddy_service.del_ref(_root, _ref);
 	}
 
@@ -946,18 +998,36 @@ public:
 
 	template < typename _dt >
 	void swap (gc_buddy < _dt > & g) {
+		bool
+			local_active = _remote_active,
+			g_local_active = g._remote_active;
+
+		// remove current
+		if (_ref && local_active)
+			_gc_buddy_service.del_ref(_root, _ref);
+
+		if (g._ref && g_local_active)
+			_gc_buddy_service.del_ref(g._root, g._ref);
+
+		// swap
 		std::swap (_obj, g._obj);
-		std::swap (_ref, g._ref);
+		std::swap(local_active, g_local_active);
+
+		if (_obj && local_active)
+			_ref = _gc_buddy_service.reg_ref(_root, _obj, &_remote_active);
+
+		if (g._obj && g_local_active)
+			g._ref = _gc_buddy_service.reg_ref(g._root, g._obj, &g._remote_active);
 	}
 
 private:
 
 	inline explicit gc_buddy(memory::table_node *node) :
 		_obj{node},
-		_ref{_gc_buddy_service.reg_ref(_root, node)} {}
+		_ref{_gc_buddy_service.reg_ref(_root, node, &_remote_active)} {}
 
 	inline _t *get() const noexcept {
-		if (_obj)
+		if (_obj && _remote_active)
 			return reinterpret_cast < _t *> (_obj->obj.ptr);
 		else
 			return nullptr;
@@ -965,12 +1035,12 @@ private:
 
 	template<typename _dt>
 	inline void copy(gc_buddy<_dt> const &v) {
-		if (_ref)
+		if (_ref && _remote_active)
 			_gc_buddy_service.del_ref(_root, _ref);
 
 		if (v._ref) {
 			_obj = v._obj;
-			_ref = _gc_buddy_service.reg_ref(_root, _obj);
+			_ref = _gc_buddy_service.reg_ref(_root, _obj, &_remote_active);
 		} else {
 			_obj = nullptr;
 			_ref = nullptr;
@@ -981,6 +1051,7 @@ private:
 
 	memory::table_node *_ref{nullptr};
 	memory::table_node *_obj{nullptr};
+	bool				_remote_active{ true };
 
 };
 
