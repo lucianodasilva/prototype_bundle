@@ -147,6 +147,7 @@ namespace memory {
 
 		iterator begin () { return {head}; }
 		iterator end () const { return { nullptr }; }
+
 	};
 
 	namespace buddy {
@@ -318,13 +319,7 @@ namespace memory {
 					return nullptr;
 
 				auto diff = reinterpret_cast < uint8_t * >(h) - _buffer.get();
-				
-				std::cout << "orig: " << diff;
-
 				diff ^= (32U << h->level);
-
-				std::cout << " buddy: " << diff << " level: " << static_cast < int > (h->level) << std::endl;
-
 				return reinterpret_cast<header * > (_buffer.get() + diff);
 			}
 
@@ -364,7 +359,6 @@ namespace memory {
 
 	struct table_ref {
 		table_node * 	to;
-		bool *			remote_active;
 	};
 
 	struct table_node {
@@ -410,14 +404,11 @@ namespace memory {
 			return node;
 		}
 
-		table_node *add_ref_node(table_node *from_object, table_node *to_object, bool * remote_active) {
+		table_node *add_ref_node(table_node *from_object, table_node *to_object) {
 			auto * node = _available_nodes.reserve();
 
 			from_object->obj.ref_chain.prepend(node);
 			node->ref.to = to_object;
-			node->ref.remote_active = remote_active;
-
-			*remote_active = true;
 
 			return node;
 		}
@@ -425,10 +416,6 @@ namespace memory {
 		void rem_obj_node(table_node *object) {
 			// -- clear refs --
 			// theoretically they should clear themselves but...
-			for (auto & ref : object->obj.ref_chain){
-				*(ref.ref.remote_active) = false; // mark as "inactive"
-			}
-
 			object->obj.ref_chain.clear (_available_nodes);
 			// remove object
 			_objects.remove(object);
@@ -436,7 +423,6 @@ namespace memory {
 		}
 
 		void rem_ref_node(table_node *from_object, table_node *ref) {
-			*(ref->ref.remote_active) = false;
 			from_object->obj.ref_chain.remove (ref);
 			_available_nodes.release (ref);
 		}
@@ -717,12 +703,53 @@ namespace memory {
 			return _active_root ? _active_root : (_active_root = _table.get_root());
 		}
 
-		table_node * reg_ref(table_node *from, table_node *to, bool * remote_active) {
-			return _table.add_ref_node(from, to, remote_active);
+		table_node * reg_ref(table_node *from, table_node *to) {
+			if (!to)
+				__debugbreak();
+
+			std::cout << "rref from: " << from << "\n\r";
+			// print stuff
+			std::cout << " -- before -- \n\r";
+			for (auto & r : from->obj.ref_chain) {
+				if (!r.ref.to)
+					__debugbreak();
+				std::cout << " ---- to: " << r.ref.to << "\n\r";
+			}
+
+			auto * r = _table.add_ref_node(from, to);
+
+			if (!r->ref.to)
+				__debugbreak();
+			// print stuff
+			std::cout << " -- after -- \n\r";
+			for (auto & r : from->obj.ref_chain) {
+				if (!r.ref.to)
+					__debugbreak();
+				std::cout << " ---- to: " << r.ref.to << "\n\r";
+			}
+
+			return r;
 		}
 
 		void del_ref(table_node *from, table_node *ref) {
+			if (!ref->ref.to)
+				__debugbreak();
+
+			std::cout << "dref from: " << from << "\n\r";
+			// print stuff
+			std::cout << " -- before -- \n\r";
+			for (auto & r : from->obj.ref_chain) {
+				if (!r.ref.to)
+					__debugbreak();
+				std::cout << " ---- to: " << r.ref.to << "\n\r";
+			}
 			_table.rem_ref_node(from, ref);
+
+			// print stuff
+			std::cout << " -- after -- \n\r";
+			for (auto & r : from->obj.ref_chain) {
+				std::cout << " ---- to: " << r.ref.to << "\n\r";
+			}
 		}
 
 		void collect() {
@@ -978,8 +1005,7 @@ public:
 	}
 
 	~gc_buddy() {
-		if (_ref && _remote_active)
-			_gc_buddy_service.del_ref(_root, _ref);
+		_gc_buddy_service.del_ref(_root, _ref);
 	}
 
 	template <
@@ -998,36 +1024,31 @@ public:
 
 	template < typename _dt >
 	void swap (gc_buddy < _dt > & g) {
-		bool
-			local_active = _remote_active,
-			g_local_active = g._remote_active;
-
 		// remove current
-		if (_ref && local_active)
+		if (_ref)
 			_gc_buddy_service.del_ref(_root, _ref);
 
-		if (g._ref && g_local_active)
+		if (g._ref)
 			_gc_buddy_service.del_ref(g._root, g._ref);
 
 		// swap
 		std::swap (_obj, g._obj);
-		std::swap(local_active, g_local_active);
 
-		if (_obj && local_active)
-			_ref = _gc_buddy_service.reg_ref(_root, _obj, &_remote_active);
+		if (_obj)
+			_ref = _gc_buddy_service.reg_ref(_root, _obj);
 
-		if (g._obj && g_local_active)
-			g._ref = _gc_buddy_service.reg_ref(g._root, g._obj, &g._remote_active);
+		if (g._obj)
+			g._ref = _gc_buddy_service.reg_ref(g._root, g._obj);
 	}
 
 private:
 
 	inline explicit gc_buddy(memory::table_node *node) :
 		_obj{node},
-		_ref{_gc_buddy_service.reg_ref(_root, node, &_remote_active)} {}
+		_ref{_gc_buddy_service.reg_ref(_root, node)} {}
 
 	inline _t *get() const noexcept {
-		if (_obj && _remote_active)
+		if (_obj)
 			return reinterpret_cast < _t *> (_obj->obj.ptr);
 		else
 			return nullptr;
@@ -1035,12 +1056,12 @@ private:
 
 	template<typename _dt>
 	inline void copy(gc_buddy<_dt> const &v) {
-		if (_ref && _remote_active)
+		if (_ref)
 			_gc_buddy_service.del_ref(_root, _ref);
 
 		if (v._ref) {
 			_obj = v._obj;
-			_ref = _gc_buddy_service.reg_ref(_root, _obj, &_remote_active);
+			_ref = _gc_buddy_service.reg_ref(_root, _obj);
 		} else {
 			_obj = nullptr;
 			_ref = nullptr;
@@ -1049,9 +1070,8 @@ private:
 
 	memory::table_node *const _root{_gc_buddy_service.get_root()};
 
-	memory::table_node *_ref{nullptr};
 	memory::table_node *_obj{nullptr};
-	bool				_remote_active{ true };
+	memory::table_node *_ref{nullptr};
 
 };
 
