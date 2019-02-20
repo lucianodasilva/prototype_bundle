@@ -7,6 +7,21 @@
 #include <cstring>
 #include <cmath>
 #include <cstdint>
+#include <csignal>
+
+#if __linux__
+#define debugbreak() std::raise(SIGINT)
+#else
+#define debugbreak() __debugbreak()
+#endif
+
+struct debug_chain {
+	template < typename _t >
+	static void print(_t & chain) {
+		for (auto & n : chain)
+			n.print();
+	}
+};
 
 namespace memory {
 
@@ -190,6 +205,10 @@ namespace memory {
 				ptr = p;
 				p->user_data = this;
 			}
+
+			void node_print() {
+				std::cout << " -- ptr: " << (void *)ptr << "\n\r";
+			}
 		};
 
 		template<class _t>
@@ -370,6 +389,10 @@ namespace memory {
 						obj;
 			table_ref 	ref;
 		};
+
+		void print () {
+			std::cout << " -- obj (" << (void *)obj.ptr << ") ref (" << (void *)ref.to << ")\n\r";
+		}
 	};
 
 	struct alignas(8) page_header {
@@ -705,42 +728,34 @@ namespace memory {
 
 		table_node * reg_ref(table_node *from, table_node *to) {
 			if (!to)
-				__debugbreak();
+				debugbreak();
 
 			std::cout << "rref from: " << from << "\n\r";
 			// print stuff
 			std::cout << " -- before -- \n\r";
-			for (auto & r : from->obj.ref_chain) {
-				if (!r.ref.to)
-					__debugbreak();
-				std::cout << " ---- to: " << r.ref.to << "\n\r";
-			}
+			debug_chain::print(from->obj.ref_chain);
 
 			auto * r = _table.add_ref_node(from, to);
 
 			if (!r->ref.to)
-				__debugbreak();
+				debugbreak();
 			// print stuff
 			std::cout << " -- after -- \n\r";
-			for (auto & r : from->obj.ref_chain) {
-				if (!r.ref.to)
-					__debugbreak();
-				std::cout << " ---- to: " << r.ref.to << "\n\r";
-			}
+			debug_chain::print(from->obj.ref_chain);
 
 			return r;
 		}
 
 		void del_ref(table_node *from, table_node *ref) {
 			if (!ref->ref.to)
-				__debugbreak();
+				debugbreak();
 
 			std::cout << "dref from: " << from << "\n\r";
 			// print stuff
 			std::cout << " -- before -- \n\r";
 			for (auto & r : from->obj.ref_chain) {
 				if (!r.ref.to)
-					__debugbreak();
+					debugbreak();
 				std::cout << " ---- to: " << r.ref.to << "\n\r";
 			}
 			_table.rem_ref_node(from, ref);
@@ -1025,11 +1040,15 @@ public:
 	template < typename _dt >
 	void swap (gc_buddy < _dt > & g) {
 		// remove current
-		if (_ref)
+		if (_ref) {
 			_gc_buddy_service.del_ref(_root, _ref);
+			_ref = nullptr;
+		}
 
-		if (g._ref)
+		if (g._ref) {
 			_gc_buddy_service.del_ref(g._root, g._ref);
+			g._ref = nullptr;
+		}
 
 		// swap
 		std::swap (_obj, g._obj);
@@ -1056,8 +1075,10 @@ private:
 
 	template<typename _dt>
 	inline void copy(gc_buddy<_dt> const &v) {
-		if (_ref)
+		if (_ref) {
 			_gc_buddy_service.del_ref(_root, _ref);
+			_ref = nullptr;
+		}
 
 		if (v._ref) {
 			_obj = v._obj;
