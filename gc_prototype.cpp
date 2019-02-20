@@ -5,6 +5,7 @@
 #include <malloc.h>
 #include <iostream>
 #include <cstring>
+#include <cstring>
 #include <cmath>
 #include <cstdint>
 #include <csignal>
@@ -18,8 +19,8 @@
 struct debug_chain {
 	template < typename _t >
 	static void print(_t & chain) {
-		for (auto & n : chain)
-			n.print();
+		//for (auto & n : chain)
+		//	n.print();
 	}
 };
 
@@ -286,19 +287,16 @@ namespace memory {
 			}
 
 			void free (header * h) {
-				std::cout << "<< coalescing nodes >>" << std::endl;
 				// coalescing nodes
 				auto * buddy = find_buddy (h);
 
 				while (buddy && buddy->free) {
-					std::cout << " -- merge" << std::endl;
 					// merge block
 					// -- remove available node
 					alloc_block(buddy);
 
 					// -- move to left most header
 					if (buddy < h) {
-						std::cout << " ---- move left" << std::endl;
 						h = buddy;
 					}
 
@@ -310,7 +308,6 @@ namespace memory {
 
 				// release header
 				free_block(h);
-				std::cout << "<< coalescing done >>" << std::endl;
 			}
 
 		private:
@@ -713,6 +710,8 @@ namespace memory {
 			alloc->user_data = (void *)destructor;
 
 			node->obj.ptr = alloc->begin();
+			if (!node->obj.ptr)
+				debugbreak();
 
 			auto *prev_root = _active_root;
 			_active_root = node;
@@ -727,44 +726,11 @@ namespace memory {
 		}
 
 		table_node * reg_ref(table_node *from, table_node *to) {
-			if (!to)
-				debugbreak();
-
-			std::cout << "rref from: " << from << "\n\r";
-			// print stuff
-			std::cout << " -- before -- \n\r";
-			debug_chain::print(from->obj.ref_chain);
-
-			auto * r = _table.add_ref_node(from, to);
-
-			if (!r->ref.to)
-				debugbreak();
-			// print stuff
-			std::cout << " -- after -- \n\r";
-			debug_chain::print(from->obj.ref_chain);
-
-			return r;
+			return _table.add_ref_node(from, to);
 		}
 
 		void del_ref(table_node *from, table_node *ref) {
-			if (!ref->ref.to)
-				debugbreak();
-
-			std::cout << "dref from: " << from << "\n\r";
-			// print stuff
-			std::cout << " -- before -- \n\r";
-			for (auto & r : from->obj.ref_chain) {
-				if (!r.ref.to)
-					debugbreak();
-				std::cout << " ---- to: " << r.ref.to << "\n\r";
-			}
 			_table.rem_ref_node(from, ref);
-
-			// print stuff
-			std::cout << " -- after -- \n\r";
-			for (auto & r : from->obj.ref_chain) {
-				std::cout << " ---- to: " << r.ref.to << "\n\r";
-			}
 		}
 
 		void collect() {
@@ -1020,7 +986,8 @@ public:
 	}
 
 	~gc_buddy() {
-		_gc_buddy_service.del_ref(_root, _ref);
+		if (_ref)
+			_gc_buddy_service.del_ref(_root, _ref);
 	}
 
 	template <
