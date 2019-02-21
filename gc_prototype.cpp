@@ -710,8 +710,6 @@ namespace memory {
 			alloc->user_data = (void *)destructor;
 
 			node->obj.ptr = alloc->begin();
-			if (!node->obj.ptr)
-				debugbreak();
 
 			auto *prev_root = _active_root;
 			_active_root = node;
