@@ -716,6 +716,8 @@ namespace memory {
 			new(node->obj.ptr) _t(std::forward<_args_tv>(args)...);
 			_active_root = prev_root;
 
+			if (node && !node->obj.ptr) debugbreak();
+
 			return node;
 		}
 
@@ -1023,13 +1025,18 @@ public:
 
 		if (g._obj)
 			g._ref = _gc_buddy_service.reg_ref(g._root, g._obj);
+
+		if (_obj && !_obj->obj.ptr) debugbreak();
 	}
 
 private:
 
 	inline explicit gc_buddy(memory::table_node *node) :
 		_obj{node},
-		_ref{_gc_buddy_service.reg_ref(_root, node)} {}
+		_ref{_gc_buddy_service.reg_ref(_root, node)} 
+	{
+		if (_obj && !_obj->obj.ptr) debugbreak();
+	}
 
 	inline _t *get() const noexcept {
 		if (_obj)
@@ -1052,6 +1059,8 @@ private:
 			_obj = nullptr;
 			_ref = nullptr;
 		}
+
+		if (_obj && !_obj->obj.ptr) debugbreak();
 	}
 
 	memory::table_node *const _root{_gc_buddy_service.get_root()};
