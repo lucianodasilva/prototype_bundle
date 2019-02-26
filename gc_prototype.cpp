@@ -25,14 +25,6 @@
 #	define check_break(condition)
 #endif
 
-struct debug_chain {
-	template < typename _t >
-	static void print(_t & chain) {
-		//for (auto & n : chain)
-		//	n.print();
-	}
-};
-
 namespace memory {
 
 	namespace concept {
@@ -387,19 +379,11 @@ namespace memory {
 				if (level < _top_level) { // top level does not coalesce since its composed by a single node
 
 					auto * buddy = find_buddy(h, level);
-					check_break((uintptr_t)buddy->user_data != 0xcdcdcdcdcdcdcdcd);
 
 					while (buddy->free) {
 
 						// merge block ( clean free node chain )
 						register_as_used (buddy, level);
-
-#ifdef GC_DIAGNOSTICS
-						for (auto & o : objects) {
-							check_break(buddy::header::from_ptr(o.obj.ptr) == h || o.obj.ptr);
-							check_break(buddy::header::from_ptr(o.obj.ptr) == h || buddy::header::from_ptr(o.obj.ptr)->user_data);
-						}
-#endif
 
 						// -- move to left most header
 						if (buddy < h)
@@ -412,26 +396,11 @@ namespace memory {
 							break;
 
 						buddy = find_buddy(h, level);
-						check_break((uintptr_t)buddy->user_data != 0xcdcdcdcdcdcdcdcd);
-
-#ifdef GC_DIAGNOSTICS
-						for (auto & o : objects) {
-							check_break(buddy::header::from_ptr(o.obj.ptr) == h || o.obj.ptr);
-							check_break(buddy::header::from_ptr(o.obj.ptr) == h || buddy::header::from_ptr(o.obj.ptr)->user_data);
-						}
-#endif
 					}
 				}
 
 				// release header
 				register_as_free (h, level);
-
-#ifdef GC_DIAGNOSTICS
-				for (auto & o : objects) {
-					check_break(buddy::header::from_ptr(o.obj.ptr) == h || o.obj.ptr);
-					check_break(buddy::header::from_ptr(o.obj.ptr) == h || buddy::header::from_ptr(o.obj.ptr)->user_data);
-				}
-#endif
 			}
 
 		private:
@@ -870,6 +839,32 @@ namespace memory {
 
 				// remove node from table
 				_table.rem_obj_node(obj_address);
+
+#ifdef GC_DIAGNOSTICS
+				bool has_invalid_header = false;
+				for (auto& o : _table.objects()) {
+					auto* h = buddy::header::from_ptr(o.obj.ptr);
+					if (!h->user_data)
+					{
+						has_invalid_header = true;
+						break;
+					}
+				}
+
+				if (has_invalid_header) {
+					for (auto& o : _table.objects()) {
+						auto* h = buddy::header::from_ptr(o.obj.ptr);
+						std::cout 
+							<< (void*)& o 
+							<< " | prev: " << o.prev 
+							<< " | next: " << o.next 
+							<< " | level: " << (int)h->level 
+							<< " -> " << h->user_data << std::endl;
+					}
+
+					debugbreak();
+				}
+#endif
 
 				// dealocate from page
 				_page.free(header, _table.objects());
