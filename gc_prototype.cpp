@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <csignal>
 
-#define GC_DIAGNOSTICS
+//#define GC_DIAGNOSTICS
 
 #if __linux__
 #define debugbreak() std::raise(SIGINT)
@@ -317,10 +317,10 @@ namespace memory {
 		public:
 
 			page (std::size_t capacity) :
-				_buffer_size { 16 << 20 },
+				_buffer_size { capacity },
 				_top_level { level_of (_buffer_size) },
-				_available_nodes { 16 << 20 / 32 / 2 },
-				_buffer{ new uint8_t [16 << 20] },
+				_available_nodes { capacity / 32 / 2 },
+				_buffer{ new uint8_t [capacity] },
 				_free_levels { new memory::node_chain < header_node > [_top_level + 1] }
 			{
 				// clean up stuff 
@@ -380,8 +380,7 @@ namespace memory {
 
 					auto * buddy = find_buddy(h, level);
 
-					while (buddy->free) {
-
+					while (buddy->free && buddy->level == level) {
 						// merge block ( clean free node chain )
 						register_as_used (buddy, level);
 
@@ -830,7 +829,10 @@ namespace memory {
 				obj.obj.flags.marked = false;
 			}
 
-			for (auto obj_address : black_nodes) {
+			for (auto * obj_address : black_nodes) {
+#ifdef GC_DIAGNOSTICS
+				auto obj_copy = *obj_address;
+#endif
 				// get header
 				auto * header = buddy::header::from_ptr(obj_address->obj.ptr);
 				// call destructor
@@ -840,34 +842,52 @@ namespace memory {
 				// remove node from table
 				_table.rem_obj_node(obj_address);
 
-#ifdef GC_DIAGNOSTICS
-				bool has_invalid_header = false;
-				for (auto& o : _table.objects()) {
-					auto* h = buddy::header::from_ptr(o.obj.ptr);
-					if (!h->user_data)
-					{
-						has_invalid_header = true;
-						break;
-					}
-				}
-
-				if (has_invalid_header) {
-					for (auto& o : _table.objects()) {
-						auto* h = buddy::header::from_ptr(o.obj.ptr);
-						std::cout 
-							<< (void*)& o 
-							<< " | prev: " << o.prev 
-							<< " | next: " << o.next 
-							<< " | level: " << (int)h->level 
-							<< " -> " << h->user_data << std::endl;
-					}
-
-					debugbreak();
-				}
-#endif
-
 				// dealocate from page
 				_page.free(header, _table.objects());
+
+#ifdef GC_DIAGNOSTICS
+				{
+					bool has_deleted_header = false;
+					bool has_invalid_header = false;
+
+					for (auto &o : _table.objects()) {
+						auto *h = buddy::header::from_ptr(o.obj.ptr);
+						if (!h->user_data) {
+							has_invalid_header = true;
+						}
+
+						has_deleted_header |= (&o == obj_address);
+					}
+
+
+					if (has_invalid_header || has_deleted_header) {
+						auto *h = buddy::header::from_ptr(obj_address->obj.ptr);
+
+						std::cout << "deleting: "
+								  << (void *) obj_address
+								  << " | prev: " << obj_copy.prev
+								  << " | next: " << obj_copy.next
+								  << " | level: " << (int) h->level
+								  << " -> " << h->user_data << std::endl << std::endl;
+
+						for (auto &o : _table.objects()) {
+							h = buddy::header::from_ptr(o.obj.ptr);
+							std::cout
+								<< (void *) &o
+								<< " | prev: " << o.prev
+								<< " | next: " << o.next
+								<< " | level: " << (int) h->level
+								<< " -> " << h->user_data << std::endl;
+						}
+
+						if (has_deleted_header) {
+							std::cout << "delete failed for: " << (void *) obj_address;
+						}
+
+						debugbreak();
+					}
+				}
+#endif
 			}
 
 		}
@@ -888,7 +908,7 @@ namespace memory {
 using namespace memory::literals;
 memory::collector<8_mb> _gc_service;
 
-memory::collector_buddy<8_mb> _gc_buddy_service;
+memory::collector_buddy<64_mb> _gc_buddy_service;
 
 template<typename _t>
 struct gc {
@@ -1161,24 +1181,11 @@ inline gc_buddy<_t> gc_buddy_new (_args_tv &&... args) {
 
 constexpr uint32_t object_size = 16;//1_kb;
 
-struct demo2;
-
 struct demo {
 	uint8_t xxx[object_size];
-	gc<demo2> obj_pointer;
-
 	gc<demo> to;
 };
 
-struct demo2 {
-	uint8_t xxx[object_size];
-	gc<demo> obj_pointer;
-};
-
-struct demo3 : public demo2 {
-
-};
-/*
 void gc_alloc_assign(benchmark::State &state) {
 
 	auto root = gc_new<demo>();
@@ -1217,14 +1224,14 @@ void gc_collect(benchmark::State &state) {
 }
 
 BENCHMARK(gc_collect)->Range(1 << 8, 1 << 18);
-*/
+
 
 struct demo_buddy {
 	uint8_t xxx[object_size];
 	gc_buddy<demo_buddy> to;
 };
 
-void gc_buddy_alloc_assign(benchmark::State &state) {
+void gc_buddy_assign(benchmark::State &state) {
 	auto root = gc_buddy_new<demo_buddy>();
 	auto node = root;
 
@@ -1240,15 +1247,32 @@ void gc_buddy_alloc_assign(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(gc_buddy_alloc_assign)->Range(1 << 8, 1 << 18);
+BENCHMARK(gc_buddy_assign)->Range(1 << 8, 1 << 18);
 
-/*
+void gc_buddy_collect(benchmark::State &state) {
+	auto root = gc_buddy_new<demo_buddy>();
+	auto node = root;
+
+	for (auto _ : state) {
+
+		state.PauseTiming();
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			node->to = gc_buddy_new<demo_buddy>();
+		}
+		state.ResumeTiming();
+
+		_gc_buddy_service.collect();
+	}
+}
+
+BENCHMARK(gc_buddy_collect)->Range(1 << 8, 1 << 18);
+
 struct no_gc_demo {
 	uint8_t xxx[object_size];
 	no_gc_demo *cenas;
 };
 
-void no_gc_baseline(benchmark::State &state) {
+void no_gc_baseline_alloc(benchmark::State &state) {
 
 	std::vector<std::unique_ptr<no_gc_demo> > recovery;
 
@@ -1271,7 +1295,30 @@ void no_gc_baseline(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(no_gc_baseline)->Range(1 << 8, 1 << 16);
+BENCHMARK(no_gc_baseline_alloc)->Range(1 << 8, 1 << 18);
+
+void no_gc_baseline_collect(benchmark::State &state) {
+
+	std::vector<std::unique_ptr<no_gc_demo> > recovery;
+
+	for (auto _ : state) {
+		auto root = new no_gc_demo();
+
+			state.PauseTiming();
+		for (std::size_t i = 0; i < state.range(0); ++i) {
+			auto obj = new no_gc_demo();
+			obj->cenas = root;
+			root->cenas = obj;
+
+			recovery.emplace_back(obj);
+		}
+		state.ResumeTiming();
+
+		recovery.clear();
+	}
+}
+
+BENCHMARK(no_gc_baseline_collect)->Range(1 << 8, 1 << 18);
 
 void shared_ptr_alloc_baseline(benchmark::State &state) {
 
@@ -1296,7 +1343,7 @@ void shared_ptr_alloc_baseline(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(shared_ptr_alloc_baseline)->Range(1 << 8, 1 << 16);
+BENCHMARK(shared_ptr_alloc_baseline)->Range(1 << 8, 1 << 18);
 
 void shared_ptr_collect_baseline(benchmark::State &state) {
 
@@ -1321,6 +1368,6 @@ void shared_ptr_collect_baseline(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(shared_ptr_collect_baseline)->Range(1 << 8, 1 << 16);
-*/
+BENCHMARK(shared_ptr_collect_baseline)->Range(1 << 8, 1 << 18);
+
 BENCHMARK_MAIN();
