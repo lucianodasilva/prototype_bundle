@@ -26,6 +26,7 @@ option (build_radix_benchmark "Build radix_benchmark" ON)
 option (build_dispatch_benchmark "Build dispatch_benchmark" ON)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" ON)
 option (build_gc_prototype_benchmark "build gc_prototype_benchmark" ON)
+option (build_bbtree_benchmark "build bbtree_benchmark" ON)
 
 if (build_radix_benchmark OR build_dispatch_benchmark OR build_row_or_column_benchmark)
     set(GOOGLE_BENCHMARK_PATH "" CACHE PATH "Location of google benchmark")
@@ -66,5 +67,12 @@ if (build_gc_prototype_benchmark)
 
     add_executable(gc_prototype_benchmark gc_prototype.cpp)
     target_link_libraries(gc_prototype_benchmark benchmark benchmark_main)
+
+endif()
+
+if (build_bbtree_benchmark)
+
+    add_executable(bbtree bbtree.cpp)
+    target_link_libraries(bbtree benchmark_main)
 
 endif()

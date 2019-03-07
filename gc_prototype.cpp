@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <csignal>
+#include <traits>
 
 //#define GC_DIAGNOSTICS
 
@@ -31,6 +32,9 @@ namespace memory {
 
 		template<typename _to_t, typename _from_t>
 		using Assignable = typename std::enable_if < std::is_assignable<_to_t, _from_t>::value >::type;
+
+		template<typename _t>
+		using HasPrev = std::enable_if_v < std::is_same_v < decltype (std::declval < _t >().prev), _t* > >;
 
 	}
 
