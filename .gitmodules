@@ -1,0 +1,6 @@
+[submodule "extras/benchmark.git"]
+	path = extras/benchmark.git
+	url = https://github.com/google/benchmark.git
+[submodule "extras/glm.git"]
+	path = extras/glm.git
+	url = https://github.com/g-truc/glm.git
