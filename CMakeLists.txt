@@ -28,15 +28,14 @@ option (build_gc_prototype_benchmark "build gc_prototype_benchmark" OFF)
 option (build_bbtree_benchmark "build bbtree_benchmark" OFF)
 option (build_streamming_tasks "build streamming_tasks" ON)
 option (build_copy_benchmark "build copy benchmark" ON)
+option (build_timing_benchmark "build timing benchmark" ON)
 
-if (build_radix_benchmark OR build_dispatch_benchmark OR build_row_or_column_benchmark OR build_streamming_tasks OR build_copy_benchmark)
-    # disable google benchmark testing
-    set (BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "")
-    set (BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "")
+# disable google benchmark testing
+set (BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "")
+set (BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "")
 
-	set (GOOGLE_BENCHMARK_PATH ${CMAKE_CURRENT_LIST_DIR}/extras/benchmark.git/)
-    add_subdirectory(${GOOGLE_BENCHMARK_PATH} ${prototype_bundle_BINARY_DIR}/benchmark)
-endif()
+set (GOOGLE_BENCHMARK_PATH ${CMAKE_CURRENT_LIST_DIR}/extras/benchmark.git/)
+add_subdirectory(${GOOGLE_BENCHMARK_PATH} ${prototype_bundle_BINARY_DIR}/benchmark)
 
 if (build_radix_benchmark)
 
@@ -91,4 +90,9 @@ endif()
 if (build_copy_benchmark)
 	add_executable (copy_benchmark copy_benchmark.cpp)
 	target_link_libraries (copy_benchmark PUBLIC benchmark_main)
+endif()
+
+if (build_timing_benchmark) 
+	add_executable (timing_benchmark timing_benchmark.cpp)
+	target_link_libraries (timing_benchmark PUBLIC benchmark_main)
 endif()

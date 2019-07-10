@@ -4,7 +4,11 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 
+#include <atomic>
 #include <vector>
+#include <memory>
+#include <thread>
+#include <mutex>
 
 #include "static_ring_buffer.hpp"
 
@@ -26,8 +30,8 @@ struct transformer {
 	quat orientation;
 	vec3 scale;
 
-	inline void to_matrix(mat4 * dest) const {
-		*dest = glm::scale(
+	inline void to_matrix(mat4 & dest) const {
+		dest = glm::scale(
 			translate(
 				mat4_cast(orientation), 
 				position), 
@@ -49,14 +53,21 @@ std::vector < transformer > generate_data(std::size_t count) {
 
 // prototype implementation
 namespace proto {
+
 	namespace details {
 
 		class task {
 		public:
-			// callable
-			task * parent;
 
-			virtual void execute() = 0;
+			task * parent;
+			std::atomic < int > dependencies;
+
+			bool is_done();
+
+			bool can_run () {
+				return (!parent || parent->is_done());
+			}
+
 		private:
 		};
 
@@ -70,6 +81,7 @@ namespace proto {
 			task * pop() {
 				if (_tasks.empty())
 					return nullptr;
+
 				task * t = _tasks.front();
 				_tasks.pop_front();
 
@@ -86,23 +98,67 @@ namespace proto {
 
 	}
 
+	struct executor {
+	public:
 
+		executor(std::size_t worker_count = std::thread::hardware_concurrency() - 1) :
+			_workers(worker_count)
+		{}
+
+		void run() {
+
+			// setup workers
+			_workers.emplace_back ([this] {
+				for (;;) {
+					{
+						std::unique_lock < typename base_t::mutex_t > lock(_task_mutex);
+
+						if (!this->_run && this->_tasks.empty())
+							return;
+
+						_task_condition.wait(
+							lock,
+							[this] { return !(this->_tasks.empty() && this->_run); }
+						);
+
+						std::swap(this->_tasks, this->_executing_tasks);
+						this->_tasks.resize(0);
+					}
+
+					for (auto& task : this->_tasks)
+						task();
+				}
+				});
+		}
+
+	private:
+		std::vector < std::thread > _workers;
+	};
 }
 
 void SequentialTransforms (benchmark::State& state) {
+	auto range = state.range(0);
 
+	state.PauseTiming();
+	auto data = generate_data(range);
+	auto result = std::vector < glm::mat4 > (range);
+	state.ResumeTiming();
+
+	for (auto _ : state) {
+		for (int i = 0; i < range; ++i) {
+			data[i].to_matrix(result [i]);
+		}
+	}
 }
 
-void ParallelTransforms(benchmark::State& state) {
+// void ParallelTransforms(benchmark::State& state) {}
 
-}
-
-#define MIN_ITERATION_RANGE 1 << 8
-#define MAX_ITERATION_RANGE 1 << 16
+#define MIN_ITERATION_RANGE 1 << 16
+#define MAX_ITERATION_RANGE 1 << 24
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-BENCHMARK(SequentialTransforms)->RANGE;
-BENCHMARK(ParallelTransforms)->RANGE;
+BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(ParallelTransforms)->RANGE;
 
 BENCHMARK_MAIN();
