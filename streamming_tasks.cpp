@@ -5,6 +5,7 @@
 #include <glm/gtc/random.hpp>
 
 #include <atomic>
+#include <functional>
 #include <vector>
 #include <memory>
 #include <thread>
@@ -54,85 +55,179 @@ std::vector < transformer > generate_data(std::size_t count) {
 // prototype implementation
 namespace proto {
 
-	namespace details {
+	using callable_type = std::function < void(void) >;
 
-		class task {
-		public:
+	struct task {
+	public:
 
-			task * parent;
-			std::atomic < int > dependencies;
+		bool is_complete() const {
+			return dependencies == 0 || _complete;
+		}
 
-			bool is_done();
+		void run() {
+			if (_callback) {
+				_callback();
+				_complete = true;
 
-			bool can_run () {
-				return (!parent || parent->is_done());
+				if (_parent)
+					--(_parent->dependencies);
 			}
+		}
 
-		private:
-		};
+		task() = default;
 
-		struct task_set {
-		public:
+		task(callable_type&& callback, task* parent) : _callback{ std::move(callback) }, _parent { parent }
+		{}
 
-			void push(task * t) {
-				_tasks.push_back(t);
-			}
+		std::atomic_uint dependencies{ 0 };
 
-			task * pop() {
-				if (_tasks.empty())
-					return nullptr;
+	private:
+		callable_type	_callback{};
+		task *			_parent{ nullptr };
+		bool			_complete{ false };
+	};
 
-				task * t = _tasks.front();
-				_tasks.pop_front();
+	struct task_lane {
+	public:
 
-				return t;
-			}
+		std::unique_lock < std::mutex > lock() {
+			return std::unique_lock < std::mutex > { mutex };
+		}
 
-			task* steal() {
+		std::unique_lock < std::mutex > try_lock() {
+			return std::unique_lock < std::mutex > (mutex, std::try_to_lock);
+		}
 
-			}
-			
-		private:
-			static_ring_buffer < task *, 4096 > _tasks;
-		};
+		static_ring_buffer  < task *, 4098 > 
+					tasks;
+		std::mutex	mutex;
 
-	}
+	};
 
 	struct executor {
 	public:
 
-		executor(std::size_t worker_count = std::thread::hardware_concurrency() - 1) :
+		executor(std::size_t worker_count) :
 			_workers(worker_count)
 		{}
+
+		void run_lane () {
+			auto* t = next();
+
+			if (t) {
+				t->run();
+			}
+			else {
+				t = steal();
+
+				if (t)
+					t->run();
+				else
+					std::this_thread::yield();
+			}
+		}
 
 		void run() {
 
 			// setup workers
-			_workers.emplace_back ([this] {
-				for (;;) {
-					{
-						std::unique_lock < typename base_t::mutex_t > lock(_task_mutex);
+			for (int i = 0; i < _workers.size(); ++i) {
+				_workers[i] = std::thread(
+					[](executor * inst) {
+						while (inst->_running) {
+							inst->run_lane();
+						}
+					}, 
+					this
+				);
+			}
+		}
 
-						if (!this->_run && this->_tasks.empty())
-							return;
+		void stop() {
+			_running = false;
 
-						_task_condition.wait(
-							lock,
-							[this] { return !(this->_tasks.empty() && this->_run); }
-						);
+			for (auto& worker : _workers) {
+				if (worker.joinable())
+					worker.join();
+			}
+		}
 
-						std::swap(this->_tasks, this->_executing_tasks);
-						this->_tasks.resize(0);
+		task* next() {
+			auto& lane = get_thread_local_lane();
+			auto lock{ lane.lock() };
+
+			if (lane.tasks.empty())
+				return nullptr;
+
+			auto* t = lane.tasks.back();
+			lane.tasks.pop_back();
+			return t;
+		}
+
+		task* steal() {
+			auto it = _thread_lanes.find(std::this_thread::get_id());
+			
+			if (it == _thread_lanes.end())
+				return nullptr;
+
+			auto my_thread_it = it;
+
+			task* task{ nullptr };
+
+			do {
+				if (it == _thread_lanes.end())
+					it = _thread_lanes.begin();
+
+				{ 
+					auto lock = it->second.try_lock(); 
+
+					if (lock) {
+						task = it->second.tasks.front();
+						it->second.tasks.pop_front();
+
+						break;
 					}
-
-					for (auto& task : this->_tasks)
-						task();
 				}
-				});
+
+				++it;
+			} while (it != my_thread_it);
+
+			return task;
+		}
+
+		task_lane& get_thread_local_lane() {
+			std::unique_lock < std::mutex > lock(_lane_mutex);
+			return _thread_lanes[std::this_thread::get_id()];
+		}
+
+		template < typename _callback_t, typename _t >
+		task* push_stream_task(_callback_t&& callback, _t* data, std::size_t len) {
+
+
 		}
 
 	private:
-		std::vector < std::thread > _workers;
+
+		template < typename _callback_t, typename _t >
+		void push_stream(_callback_t&& callback, _t* begin, _t* end) {
+			auto len = begin - end;
+
+			if (len * sizeof(_t) > 32) {
+				auto* mid = begin + (len / 2);
+				push_stream(std::forward(callback), begin, mid);
+				push_stream(std::forward(callback), mid, end);
+			}
+			else {
+				task * task = new task (par)
+			}
+		}
+
+		std::vector < std::thread > 
+							_workers;
+		std::atomic_bool	_running;
+
+		std::mutex			_lane_mutex;
+		std::map < std::thread::id, task_lane > 
+							_thread_lanes;
 	};
 }
 

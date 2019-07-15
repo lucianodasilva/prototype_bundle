@@ -312,6 +312,17 @@ public:
 			_begin = 0;
 	}
 
+	inline void pop_back() {
+		if (empty())
+			return;
+
+		// destroy in place
+		at(_count - 1).get()->~value_type();
+
+		// move stuff
+		--_count;
+	}
+
 private:
 
 	inline bool is_folded() const noexcept {
