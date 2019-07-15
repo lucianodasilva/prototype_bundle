@@ -11,7 +11,11 @@
 #include <thread>
 #include <mutex>
 
+#if defined (_WIN32)
+#include <Windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "static_ring_buffer.hpp"
 
@@ -60,6 +64,29 @@ std::vector < transformer > generate_data(std::size_t count) {
 // prototype implementation
 namespace proto {
 
+	struct spin_mutex {
+	public:
+
+		inline bool try_lock() {
+			return !_lockless_flag.test_and_set(std::memory_order_acquire);
+		}
+
+		inline void lock() {
+			while (_lockless_flag.test_and_set(std::memory_order_acquire)) {}
+		}
+
+		inline void unlock() {
+			_lockless_flag.clear(std::memory_order_release);
+		}
+
+	private:
+
+		std::atomic_flag _lockless_flag = ATOMIC_FLAG_INIT;
+
+	};
+
+	using spin_lock = std::unique_lock < spin_mutex >;
+
 	using callable_type = std::function < void(void) >;
 
 	struct task {
@@ -96,7 +123,7 @@ namespace proto {
 	public:
 		static_ring_buffer  < task *, 4098 > 
 					tasks;
-		std::mutex	mutex;
+		spin_mutex	mutex;
 
 	};
 
@@ -130,14 +157,12 @@ namespace proto {
 		}
 
 		void run() {
-
 			// setup workers
 			for (int i = 0; i < _workers.size(); ++i) {
 				_workers[i] = std::thread(
 					[](executor * inst) {
-						while (inst->_running) {
+						while (inst->_running)
 							inst->run_lane();
-						}
 					}, 
 					this
 				);
@@ -155,7 +180,7 @@ namespace proto {
 
 		task* next() {
 			auto& lane = get_thread_local_lane();
-			std::unique_lock < std::mutex > lane_lock { lane.mutex };
+			spin_lock lane_lock { lane.mutex };
 
 			if (lane.tasks.empty())
 				return nullptr;
@@ -177,7 +202,7 @@ namespace proto {
 
 			do {
 				{
-					std::unique_lock < std::mutex > lane_lock { it->second.mutex, std::try_to_lock };
+					spin_lock lane_lock { it->second.mutex, std::try_to_lock };
 
 					if (lane_lock && !it->second.tasks.empty()) {
 						t = it->second.tasks.front();
@@ -198,7 +223,7 @@ namespace proto {
 		}
 
 		task_lane& get_thread_local_lane() {
-			std::unique_lock < std::mutex > lock(_lane_mutex);
+			spin_lock lock(_lane_mutex);
 			return _thread_lanes[std::this_thread::get_id()];
 		}
 
@@ -217,9 +242,35 @@ namespace proto {
 		}
 
 	private:
+#if defined (_WIN32)
+		long const cache_size{
+			[]() -> long {
+				long line_size = 0;
+				DWORD buffer_size = 0;
 
+				GetLogicalProcessorInformationEx(RelationCache, nullptr, &buffer_size);
+				if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+					return -1; // TODO: perhaps log
+
+				auto * buffer = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)malloc(buffer_size);
+
+				GetLogicalProcessorInformationEx(RelationCache, buffer, &buffer_size);
+
+				for (int i = 0; i != buffer_size / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX); ++i) {
+					if (buffer[i].Cache.Level == 1) {
+						line_size = buffer[i].Cache.LineSize;
+						break;
+					}
+				}
+
+				free(buffer);
+				return line_size;
+
+			}()
+		};
+#else
 		long const cache_size { sysconf (_SC_LEVEL1_DCACHE_LINESIZE) };
-
+#endif
 
 		inline static int gcd (int a, int b) noexcept {
 			//return a == 0 ? b : gcd (b % a, a);
@@ -254,7 +305,7 @@ namespace proto {
 			// create tasks
 			// -------------------------------------
 			auto & lane = get_thread_local_lane ();
-			std::unique_lock < std::mutex > lane_lock { lane.mutex };
+			spin_lock lane_lock { lane.mutex };
 
 			if (blocks_per_thread > 0) {
 				parent->dependencies = worker_count;
@@ -276,7 +327,6 @@ namespace proto {
 					// add task
 					auto * t = new task ([=]() {
 						callback (cursor, cursor_end);
-						--parent->dependencies;
 					}, parent);
 
 					lane.tasks.push_back (t);
@@ -288,7 +338,6 @@ namespace proto {
 				// add task
 				auto * t = new task ([=]() {
 					callback (begin, end);
-					--parent->dependencies;
 				}, parent);
 
 				lane.tasks.push_back (t);
@@ -299,15 +348,13 @@ namespace proto {
 							_workers;
 		std::atomic_bool	_running;
 
-		std::mutex			_lane_mutex;
+		spin_mutex			_lane_mutex;
 		std::map < std::thread::id, task_lane > 
 							_thread_lanes;
 	};
 }
 
 void SequentialTransforms (benchmark::State& state) {
-
-
 	for (auto _ : state) {
 		auto range = state.range(0);
 
@@ -327,7 +374,7 @@ void SequentialTransforms (benchmark::State& state) {
 
 void ParallelTransforms(benchmark::State& state) {
 
-	proto::executor exe (7);
+	proto::executor exe (4);
 	exe.run ();
 
 	for (auto _ : state) {
@@ -338,12 +385,14 @@ void ParallelTransforms(benchmark::State& state) {
 		auto data = generate_data(range);
 		state.ResumeTiming();
 
-		exe.parallel_for ([=](transformer * begin, transformer * end) {
-			auto * it = begin;
-			for (; it != end; ++it) {
-				it->update_matrix();
-			}
-		}, data);
+		exe.parallel_for (
+			[=](transformer * begin, transformer * end) {
+				auto * it = begin;
+				for (; it != end; ++it) {
+					it->update_matrix();
+				}
+			}, 
+			data);
 
 		state.PauseTiming();
 		data.clear();
@@ -354,8 +403,8 @@ void ParallelTransforms(benchmark::State& state) {
 
 }
 
-#define MIN_ITERATION_RANGE 1 << 10
-#define MAX_ITERATION_RANGE 1 << 16
+#define MIN_ITERATION_RANGE 1 << 16
+#define MAX_ITERATION_RANGE 1 << 17
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
