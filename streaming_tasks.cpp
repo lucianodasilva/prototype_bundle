@@ -11,7 +11,10 @@
 #include <thread>
 #include <mutex>
 
+#include <unistd.h>
+
 #include "static_ring_buffer.hpp"
+
 
 using namespace glm;
 
@@ -31,13 +34,15 @@ struct transformer {
 	quat orientation;
 	vec3 scale;
 
-	inline void to_matrix(mat4 & dest) const {
-		dest = glm::scale(
+	inline void update_matrix () {
+		matrix = glm::scale(
 			translate(
 				mat4_cast(orientation), 
 				position), 
 			scale);
 	}
+
+	mat4 matrix;
 };
 
 std::vector < transformer > generate_data(std::size_t count) {
@@ -89,14 +94,10 @@ namespace proto {
 
 	struct task_lane {
 	public:
-
-		std::unique_lock < std::mutex > lock() {
-			return std::unique_lock < std::mutex > { mutex };
-		}
-
+/*
 		std::unique_lock < std::mutex > try_lock() {
 			return std::unique_lock < std::mutex > (mutex, std::try_to_lock);
-		}
+		}*/
 
 		static_ring_buffer  < task *, 4098 > 
 					tasks;
@@ -110,6 +111,12 @@ namespace proto {
 		executor(std::size_t worker_count) :
 			_workers(worker_count)
 		{}
+
+		void wait_for (task * t) {
+			while (!t->is_complete()) {
+				run_lane();
+			}
+		}
 
 		void run_lane () {
 			auto* t = next();
@@ -153,7 +160,7 @@ namespace proto {
 
 		task* next() {
 			auto& lane = get_thread_local_lane();
-			auto lock{ lane.lock() };
+			std::unique_lock < std::mutex > lane_lock { lane.mutex };
 
 			if (lane.tasks.empty())
 				return nullptr;
@@ -171,17 +178,17 @@ namespace proto {
 
 			auto my_thread_it = it;
 
-			task* task{ nullptr };
+			task * t{ nullptr };
 
 			do {
 				if (it == _thread_lanes.end())
 					it = _thread_lanes.begin();
 
-				{ 
-					auto lock = it->second.try_lock(); 
+				{
+					std::unique_lock < std::mutex > lane_lock { it->second.mutex, std::try_to_lock };
 
-					if (lock) {
-						task = it->second.tasks.front();
+					if (lane_lock) {
+						t = it->second.tasks.front();
 						it->second.tasks.pop_front();
 
 						break;
@@ -191,7 +198,7 @@ namespace proto {
 				++it;
 			} while (it != my_thread_it);
 
-			return task;
+			return t;
 		}
 
 		task_lane& get_thread_local_lane() {
@@ -201,23 +208,94 @@ namespace proto {
 
 		template < typename _callback_t, typename _t >
 		task* push_stream_task(_callback_t&& callback, _t* data, std::size_t len) {
+			auto * t = new task ();
 
+			push_stream (std::forward < _callback_t > (callback), data, data + len, t);
+			return t;
+		}
 
+		template < typename _callback_t, typename _t >
+		inline void parallel_for (_callback_t && callback, std::vector < _t > & data) {
+			auto * t = push_stream_task (std::forward < _callback_t > (callback), data.data(), data.size());
+			wait_for (t);
 		}
 
 	private:
 
-		template < typename _callback_t, typename _t >
-		void push_stream(_callback_t&& callback, _t* begin, _t* end) {
-			auto len = begin - end;
+		long const cache_size { sysconf (_SC_LEVEL1_DCACHE_LINESIZE) };
 
-			if (len * sizeof(_t) > 32) {
-				auto* mid = begin + (len / 2);
-				push_stream(std::forward(callback), begin, mid);
-				push_stream(std::forward(callback), mid, end);
+
+		inline static int gcd (int a, int b) noexcept {
+			//return a == 0 ? b : gcd (b % a, a);
+
+			for (;;) {
+				a %= b;
+				if (a == 0)
+					return b;
+				b %= a;
+				if (b == 0)
+					return a;
 			}
-			else {
-				task * task = new task (par)
+		}
+
+		// Calculate workload and create tasks
+		template < typename _callback_t, typename _t >
+		void push_stream(_callback_t&& callback, _t* begin, _t* end, task * parent) {
+			auto constexpr type_size { sizeof(_t) };
+			auto const block_size { gcd (type_size, cache_size) };
+
+			auto len = end - begin;
+
+			auto blocks = len / block_size;
+			auto overflow = len % block_size;
+
+			auto worker_count = _workers.size() + 1; // +1 = main thread
+			auto blocks_per_thread = blocks / worker_count;
+
+			overflow += (blocks_per_thread % worker_count) * block_size;
+
+			// -------------------------------------
+			// create tasks
+			// -------------------------------------
+			auto & lane = get_thread_local_lane ();
+			std::unique_lock < std::mutex > lane_lock { lane.mutex };
+
+			if (blocks_per_thread > 0) {
+				parent->dependencies += worker_count;
+
+				auto * cursor = begin;
+
+				for (int i = 0; i < worker_count; ++i) {
+					int items = blocks_per_thread * block_size;
+
+					if (overflow >= cache_size) {
+						items += cache_size;
+						overflow -= cache_size;
+					} else if (i == worker_count - 1) {
+						items += overflow;
+					}
+
+					auto cursor_end = cursor + items;
+
+					// add task
+					auto * t = new task ([=]() {
+						callback (cursor, cursor_end);
+						--parent->dependencies;
+					}, parent);
+
+					lane.tasks.push_back (t);
+
+					cursor = cursor_end;
+				}
+			} else {
+				++parent->dependencies;
+				// add task
+				auto * t = new task ([=]() {
+					callback (begin, end);
+					--parent->dependencies;
+				}, parent);
+
+				lane.tasks.push_back (t);
 			}
 		}
 
@@ -232,28 +310,60 @@ namespace proto {
 }
 
 void SequentialTransforms (benchmark::State& state) {
-	auto range = state.range(0);
 
-	state.PauseTiming();
-	auto data = generate_data(range);
-	auto result = std::vector < glm::mat4 > (range);
-	state.ResumeTiming();
 
 	for (auto _ : state) {
+		auto range = state.range(0);
+
+		state.PauseTiming();
+		auto data = generate_data(range);
+		state.ResumeTiming();
+
 		for (int i = 0; i < range; ++i) {
-			data[i].to_matrix(result [i]);
+			data[i].update_matrix ();
 		}
+
+		state.PauseTiming();
+		data.clear();
+		state.ResumeTiming();
 	}
 }
 
-// void ParallelTransforms(benchmark::State& state) {}
+void ParallelTransforms(benchmark::State& state) {
 
-#define MIN_ITERATION_RANGE 1 << 16
-#define MAX_ITERATION_RANGE 1 << 24
+	proto::executor exe (7);
+	exe.run ();
+
+	for (auto _ : state) {
+
+		auto range = state.range(0);
+
+		state.PauseTiming();
+		auto data = generate_data(range);
+		state.ResumeTiming();
+
+		exe.parallel_for ([=](transformer * begin, transformer * end) {
+			auto * it = begin;
+			for (; it != end; ++it) {
+				it->update_matrix();
+			}
+		}, data);
+
+		state.PauseTiming();
+		data.clear();
+		state.ResumeTiming();
+	}
+
+	exe.stop();
+
+}
+
+#define MIN_ITERATION_RANGE 1 << 10
+#define MAX_ITERATION_RANGE 1 << 16
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-//BENCHMARK(ParallelTransforms)->RANGE;
+//BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(ParallelTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();

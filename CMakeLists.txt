@@ -26,7 +26,7 @@ option (build_dispatch_benchmark "Build dispatch_benchmark" OFF)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" OFF)
 option (build_gc_prototype_benchmark "build gc_prototype_benchmark" OFF)
 option (build_bbtree_benchmark "build bbtree_benchmark" OFF)
-option (build_streamming_tasks "build streamming_tasks" ON)
+option (build_streaming_tasks "build streamming_tasks" ON)
 option (build_copy_benchmark "build copy benchmark" ON)
 option (build_timing_benchmark "build timing benchmark" ON)
 
@@ -72,17 +72,17 @@ if (build_bbtree_benchmark)
 
 endif()
 
-if (build_streamming_tasks)
-	add_executable (streamming_tasks static_ring_buffer.hpp streamming_tasks.cpp)
+if (build_streaming_tasks)
+	add_executable (streaming_tasks static_ring_buffer.hpp streaming_tasks.cpp)
 
 	set (GLM_QUIET ON CACHE BOOL "")
 	set (BUILD_SHARED_LIBS OFF CACHE BOOL "")
 	set (BUILD_STATIC_LIBS ON CACHE BOOL "")
 	add_subdirectory (${CMAKE_CURRENT_LIST_DIR}/extras/glm.git/glm)
 
-	target_include_directories (streamming_tasks PUBLIC ${CMAKE_CURRENT_LIST_DIR}/extras/glm.git)
+	target_include_directories (streaming_tasks PUBLIC ${CMAKE_CURRENT_LIST_DIR}/extras/glm.git)
 
-	target_link_libraries (streamming_tasks PUBLIC benchmark_main glm_static)
+	target_link_libraries (streaming_tasks PUBLIC benchmark_main glm_static)
 
 
 endif()

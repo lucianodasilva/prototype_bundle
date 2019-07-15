@@ -272,7 +272,6 @@ public:
 	inline void push_back(const_reference v) {
 		if (is_full())
 			throw std::runtime_error("static ring buffer capacity exceeded");
-		std::memory_
 		// create in place
 		new (at(_count).address) value_type(v);
 		++_count;
