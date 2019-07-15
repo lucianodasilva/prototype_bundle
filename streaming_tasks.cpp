@@ -94,11 +94,6 @@ namespace proto {
 
 	struct task_lane {
 	public:
-/*
-		std::unique_lock < std::mutex > try_lock() {
-			return std::unique_lock < std::mutex > (mutex, std::try_to_lock);
-		}*/
-
 		static_ring_buffer  < task *, 4098 > 
 					tasks;
 		std::mutex	mutex;
@@ -181,13 +176,10 @@ namespace proto {
 			task * t{ nullptr };
 
 			do {
-				if (it == _thread_lanes.end())
-					it = _thread_lanes.begin();
-
 				{
 					std::unique_lock < std::mutex > lane_lock { it->second.mutex, std::try_to_lock };
 
-					if (lane_lock) {
+					if (lane_lock && !it->second.tasks.empty()) {
 						t = it->second.tasks.front();
 						it->second.tasks.pop_front();
 
@@ -196,6 +188,10 @@ namespace proto {
 				}
 
 				++it;
+
+				if (it == _thread_lanes.end())
+					it = _thread_lanes.begin();
+
 			} while (it != my_thread_it);
 
 			return t;
@@ -261,7 +257,7 @@ namespace proto {
 			std::unique_lock < std::mutex > lane_lock { lane.mutex };
 
 			if (blocks_per_thread > 0) {
-				parent->dependencies += worker_count;
+				parent->dependencies = worker_count;
 
 				auto * cursor = begin;
 
@@ -288,7 +284,7 @@ namespace proto {
 					cursor = cursor_end;
 				}
 			} else {
-				++parent->dependencies;
+				parent->dependencies = 1;
 				// add task
 				auto * t = new task ([=]() {
 					callback (begin, end);
