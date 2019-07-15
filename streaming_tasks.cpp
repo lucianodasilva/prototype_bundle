@@ -191,6 +191,7 @@ namespace proto {
 		}
 
 		task* steal() {
+			/*
 			auto it = _thread_lanes.find(std::this_thread::get_id());
 			
 			if (it == _thread_lanes.end())
@@ -220,6 +221,27 @@ namespace proto {
 			} while (it != my_thread_it);
 
 			return t;
+			*/
+
+			auto rand_index = std::chrono::high_resolution_clock::now().time_since_epoch().count() % (_thread_lanes.size());
+
+			auto it = std::next(_thread_lanes.begin(), rand_index);
+
+			if (it->first == std::this_thread::get_id()) {
+				return nullptr;
+			}
+
+			spin_lock lane_lock{ it->second.mutex, std::try_to_lock };
+
+			if (lane_lock && !it->second.tasks.empty()) {
+				auto * t = it->second.tasks.front();
+				it->second.tasks.pop_front();
+
+				return t;
+			}
+			else {
+				return nullptr;
+			}
 		}
 
 		task_lane& get_thread_local_lane() {
@@ -408,7 +430,7 @@ void ParallelTransforms(benchmark::State& state) {
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-//BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 BENCHMARK(ParallelTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
