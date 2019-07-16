@@ -84,7 +84,17 @@ if (build_streaming_tasks)
 
 	target_link_libraries (streaming_tasks PUBLIC benchmark_main glm_static)
 
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+        target_compile_options(streaming_tasks PUBLIC
+                $<$<CONFIG:Debug>:-fno-omit-frame-pointer -g>)
+    endif()
 
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+        target_compile_options(streaming_tasks PUBLIC
+                $<$<CONFIG:Debug>:/Z7> )
+
+        set_target_properties (streaming_tasks PROPERTIES LINK_FLAGS "/PROFILE")
+    endif()
 endif()
 
 if (build_copy_benchmark)

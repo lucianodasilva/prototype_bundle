@@ -5,7 +5,6 @@
 #include <glm/gtc/random.hpp>
 
 #include <atomic>
-#include <functional>
 #include <vector>
 #include <memory>
 #include <thread>
@@ -15,6 +14,8 @@
 #include <Windows.h>
 #else
 #include <unistd.h>
+#include <functional>
+
 #endif
 
 #include "static_ring_buffer.hpp"
@@ -92,38 +93,123 @@ namespace proto {
 	struct task {
 	public:
 
-		bool is_complete() const {
-			return dependencies == 0 || _complete;
-		}
-
 		void run() {
-			if (_callback) {
-				_callback();
-				_complete = true;
+			if (callback) {
+				callback();
+				executed = true;
 
-				if (_parent)
-					--(_parent->dependencies);
+				if (parent)
+					--(parent->dependencies);
 			}
 		}
 
-		task() = default;
+		bool is_complete() const {
+			return dependencies == 0 || executed;
+		}
 
-		task(callable_type&& callback, task* parent) : _callback{ std::move(callback) }, _parent { parent }
+		task () = default;
+
+		task (callable_type && m_callback, task * p_parent) :
+			callback { std::move (m_callback) },
+			parent {p_parent}
 		{}
 
-		std::atomic_uint dependencies{ 0 };
+		callable_type		callback {};
 
-	private:
-		callable_type	_callback{};
-		task *			_parent{ nullptr };
-		bool			_complete{ false };
+		task *				parent { nullptr };
+		std::atomic_uint 	dependencies { 0 };
+
+		bool				executed { false };
 	};
 
 	struct task_lane {
 	public:
-		static_ring_buffer  < task *, 4098 > 
+
+		static constexpr std::size_t mask { 4096 - 1 };
+
+		void push (task * tast_inst) {
+			auto b = bottom.load (std::memory_order::memory_order_consume);
+			tasks [b & mask] = tast_inst;
+
+			bottom.store(b + 1, std::memory_order::memory_order_release);
+		}
+
+		task * pop () {
+			auto b = bottom.load(std::memory_order::memory_order_relaxed) - 1;
+			bottom.store (b, std::memory_order::memory_order_release);
+
+			auto t = bottom.load (std::memory_order::memory_order_relaxed);
+			if (t < b) {
+				task * task_instance = tasks [b & mask];
+
+				if (t != b)
+					return task_instance;
+
+				if (top.compare_exchange_weak (t, t + 1, std::memory_order::memory_order_release)) {
+					task_instance = nullptr;
+				}
+
+				bottom.store (t + 1, std::memory_order_relaxed);
+				return task_instance;
+			} else {
+				bottom.store (t, std::memory_order_relaxed);
+				return nullptr;
+			}
+		}
+
+		task * steal () {
+			// i don't know what the hell is goin' on
+			auto t = top.load (std::memory_order::memory_order_consume);
+			auto b = bottom.load (std::memory_order::memory_order_relaxed);
+
+			if (t < b)  {
+				auto * task_inst = tasks [t & mask];
+
+				if (top.compare_exchange_weak(t, t + 1,
+					std::memory_order::memory_order_release
+				)) {
+					return nullptr;
+				}
+
+				return task_inst;
+			} else {
+				return nullptr;
+			}
+		}
+
+		std::array  < task *, 4096 >
 					tasks;
+
 		spin_mutex	mutex;
+
+	private:
+		std::atomic_size_t top{0};
+		std::atomic_size_t bottom {0};
+	};
+
+	template < typename _t, std::size_t capacity >
+	struct allocator {
+	public:
+
+		inline void clear () {
+			_index = 0;
+		}
+
+		template < typename ... _args_tv >
+		inline task * alloc (_args_tv && ... args) {
+			if (_index == capacity)
+				throw std::runtime_error ("Allocator capacity exceeded");
+
+			task * t = &_data [_index];
+			new (t) _t (std::forward < _args_tv > (args)...);
+
+			++_index;
+			return t;
+		}
+
+	private:
+		std::array < _t, capacity > _data;
+		std::size_t 				_index {0};
 
 	};
 
@@ -133,6 +219,10 @@ namespace proto {
 		executor(std::size_t worker_count) :
 			_workers(worker_count)
 		{}
+
+		void clear_alloc () {
+			my_alloc.clear();
+		}
 
 		void wait_for (task * t) {
 			while (!t->is_complete()) {
@@ -185,9 +275,7 @@ namespace proto {
 			if (lane.tasks.empty())
 				return nullptr;
 
-			auto* t = lane.tasks.back();
-			lane.tasks.pop_back();
-			return t;
+			return lane.pop();
 		}
 
 		task* steal() {
@@ -234,10 +322,7 @@ namespace proto {
 			spin_lock lane_lock{ it->second.mutex, std::try_to_lock };
 
 			if (lane_lock && !it->second.tasks.empty()) {
-				auto * t = it->second.tasks.front();
-				it->second.tasks.pop_front();
-
-				return t;
+				return it->second.steal();
 			}
 			else {
 				return nullptr;
@@ -347,25 +432,30 @@ namespace proto {
 					auto cursor_end = cursor + items;
 
 					// add task
-					auto * t = new task ([=]() {
-						callback (cursor, cursor_end);
-					}, parent);
+					auto * t = my_alloc.alloc ();
 
-					lane.tasks.push_back (t);
+					t->callback = [=]() {
+						callback(cursor, cursor_end);
+					};
+
+					t->parent = parent;
+
+					lane.push(t);
 
 					cursor = cursor_end;
 				}
 			} else {
 				parent->dependencies = 1;
 				// add task
-				auto * t = new task ([=]() {
+				auto * t = my_alloc.alloc ([=]() {
 					callback (begin, end);
 				}, parent);
 
-				lane.tasks.push_back (t);
+				lane.push (t);
 			}
 		}
 
+		allocator < task, 4096 > my_alloc;
 		std::vector < std::thread > 
 							_workers;
 		std::atomic_bool	_running;
@@ -396,7 +486,7 @@ void SequentialTransforms (benchmark::State& state) {
 
 void ParallelTransforms(benchmark::State& state) {
 
-	proto::executor exe (4);
+	proto::executor exe (3);
 	exe.run ();
 
 	for (auto _ : state) {
@@ -405,6 +495,7 @@ void ParallelTransforms(benchmark::State& state) {
 
 		state.PauseTiming();
 		auto data = generate_data(range);
+		exe.clear_alloc();
 		state.ResumeTiming();
 
 		exe.parallel_for (
@@ -425,12 +516,12 @@ void ParallelTransforms(benchmark::State& state) {
 
 }
 
-#define MIN_ITERATION_RANGE 1 << 16
-#define MAX_ITERATION_RANGE 1 << 17
+#define MIN_ITERATION_RANGE 1 << 23
+#define MAX_ITERATION_RANGE 1 << 24
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 BENCHMARK(ParallelTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
