@@ -4,8 +4,10 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 
+#include <array>
 #include <atomic>
 #include <vector>
+#include <functional>
 #include <memory>
 #include <thread>
 #include <mutex>
@@ -20,6 +22,8 @@
 
 #include "static_ring_buffer.hpp"
 
+#define MIN_ITERATION_RANGE 1 << 20
+#define MAX_ITERATION_RANGE 1 << 22
 
 using namespace glm;
 
@@ -61,6 +65,8 @@ std::vector < transformer > generate_data(std::size_t count) {
 
 	return data;
 }
+
+auto test_data{ generate_data(MAX_ITERATION_RANGE) };
 
 // prototype implementation
 namespace proto {
@@ -128,48 +134,43 @@ namespace proto {
 		static constexpr std::size_t mask { 4096 - 1 };
 
 		void push (task * tast_inst) {
-			auto b = bottom.load (std::memory_order::memory_order_consume);
+			auto b = bottom.load ();
 			tasks [b & mask] = tast_inst;
-
-			bottom.store(b + 1, std::memory_order::memory_order_release);
+			++bottom;
 		}
 
 		task * pop () {
-			auto b = bottom.load(std::memory_order::memory_order_relaxed) - 1;
-			bottom.store (b, std::memory_order::memory_order_release);
+			--bottom;
+			auto b = bottom.load();
+			auto t = top.load ();
 
-			auto t = bottom.load (std::memory_order::memory_order_relaxed);
-			if (t < b) {
+			if (t <= b) {
 				task * task_instance = tasks [b & mask];
 
 				if (t != b)
 					return task_instance;
 
-				if (top.compare_exchange_weak (t, t + 1, std::memory_order::memory_order_release)) {
+				auto tmp_t{ t };
+				if (!top.compare_exchange_weak (tmp_t, t + 1))
 					task_instance = nullptr;
-				}
 
-				bottom.store (t + 1, std::memory_order_relaxed);
+				bottom.store (t + 1);
 				return task_instance;
 			} else {
-				bottom.store (t, std::memory_order_relaxed);
+				bottom.store(t);
 				return nullptr;
 			}
 		}
 
 		task * steal () {
-			// i don't know what the hell is goin' on
-			auto t = top.load (std::memory_order::memory_order_consume);
-			auto b = bottom.load (std::memory_order::memory_order_relaxed);
+			auto t = top.load ();
+			auto b = bottom.load ();
 
 			if (t < b)  {
 				auto * task_inst = tasks [t & mask];
 
-				if (top.compare_exchange_weak(t, t + 1,
-					std::memory_order::memory_order_release
-				)) {
+				if (!top.compare_exchange_weak(t, t + 1))
 					return nullptr;
-				}
 
 				return task_inst;
 			} else {
@@ -177,12 +178,17 @@ namespace proto {
 			}
 		}
 
-		std::array  < task *, 4096 >
-					tasks;
+		bool is_empty() const {
+			return top == bottom;
+		}
 
 		spin_mutex	mutex;
 
 	private:
+
+		std::array  < task*, 4096 >
+			tasks;
+
 		std::atomic_size_t top{0};
 		std::atomic_size_t bottom {0};
 	};
@@ -235,8 +241,7 @@ namespace proto {
 
 			if (t) {
 				t->run();
-			}
-			else {
+			} else {
 				t = steal();
 
 				if (t)
@@ -270,9 +275,9 @@ namespace proto {
 
 		task* next() {
 			auto& lane = get_thread_local_lane();
-			spin_lock lane_lock { lane.mutex };
+			//spin_lock lane_lock { lane.mutex };
 
-			if (lane.tasks.empty())
+			if (lane.is_empty())
 				return nullptr;
 
 			return lane.pop();
@@ -319,14 +324,7 @@ namespace proto {
 				return nullptr;
 			}
 
-			spin_lock lane_lock{ it->second.mutex, std::try_to_lock };
-
-			if (lane_lock && !it->second.tasks.empty()) {
-				return it->second.steal();
-			}
-			else {
-				return nullptr;
-			}
+			return it->second.steal();
 		}
 
 		task_lane& get_thread_local_lane() {
@@ -343,8 +341,8 @@ namespace proto {
 		}
 
 		template < typename _callback_t, typename _t >
-		inline void parallel_for (_callback_t && callback, std::vector < _t > & data) {
-			auto * t = push_stream_task (std::forward < _callback_t > (callback), data.data(), data.size());
+		inline void parallel_for (_callback_t && callback, _t * data, std::size_t length) {
+			auto * t = push_stream_task (std::forward < _callback_t > (callback), data, length);
 			wait_for (t);
 		}
 
@@ -412,7 +410,7 @@ namespace proto {
 			// create tasks
 			// -------------------------------------
 			auto & lane = get_thread_local_lane ();
-			spin_lock lane_lock { lane.mutex };
+			//spin_lock lane_lock { lane.mutex };
 
 			if (blocks_per_thread > 0) {
 				parent->dependencies = worker_count;
@@ -470,33 +468,21 @@ void SequentialTransforms (benchmark::State& state) {
 	for (auto _ : state) {
 		auto range = state.range(0);
 
-		state.PauseTiming();
-		auto data = generate_data(range);
-		state.ResumeTiming();
-
 		for (int i = 0; i < range; ++i) {
-			data[i].update_matrix ();
+			test_data [i].update_matrix ();
 		}
-
-		state.PauseTiming();
-		data.clear();
-		state.ResumeTiming();
 	}
 }
 
 void ParallelTransforms(benchmark::State& state) {
 
-	proto::executor exe (3);
+	proto::executor exe (7);
 	exe.run ();
 
 	for (auto _ : state) {
 
 		auto range = state.range(0);
-
-		state.PauseTiming();
-		auto data = generate_data(range);
 		exe.clear_alloc();
-		state.ResumeTiming();
 
 		exe.parallel_for (
 			[=](transformer * begin, transformer * end) {
@@ -505,23 +491,16 @@ void ParallelTransforms(benchmark::State& state) {
 					it->update_matrix();
 				}
 			}, 
-			data);
-
-		state.PauseTiming();
-		data.clear();
-		state.ResumeTiming();
+			test_data.data (), range);
 	}
 
 	exe.stop();
 
 }
 
-#define MIN_ITERATION_RANGE 1 << 23
-#define MAX_ITERATION_RANGE 1 << 24
-
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-//BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 BENCHMARK(ParallelTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
