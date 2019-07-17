@@ -100,6 +100,7 @@ namespace proto {
 	public:
 
 		void run() {
+			std::size_t s = sizeof (task);
 			if (callback) {
 				callback();
 				executed = true;
@@ -120,11 +121,11 @@ namespace proto {
 			parent {p_parent}
 		{}
 
+
 		callable_type		callback {};
-
-		task *				parent { nullptr };
 		std::atomic_uint 	dependencies { 0 };
-
+		task *				parent { nullptr };
+		std::uint8_t 		_pad_ [8];
 		bool				executed { false };
 	};
 
@@ -140,9 +141,8 @@ namespace proto {
 		}
 
 		task * pop () {
-			--bottom;
-			auto b = bottom.load();
-			auto t = top.load ();
+			auto b = bottom.fetch_sub(1, std::memory_order::memory_order_relaxed) - 1;
+			auto t = top.load (std::memory_order::memory_order_relaxed);
 
 			if (t <= b) {
 				task * task_instance = tasks [b & mask];
@@ -226,6 +226,14 @@ namespace proto {
 			_workers(worker_count)
 		{}
 
+		~executor () {
+			stop();
+		}
+
+		inline bool is_running () const {
+			return _running;
+		}
+
 		void clear_alloc () {
 			my_alloc.clear();
 		}
@@ -253,10 +261,12 @@ namespace proto {
 
 		void run() {
 			// setup workers
+			_running = true;
+
 			for (int i = 0; i < _workers.size(); ++i) {
 				_workers[i] = std::thread(
 					[](executor * inst) {
-						while (inst->_running)
+						while (inst->_running.load (std::memory_order::memory_order_relaxed))
 							inst->run_lane();
 					}, 
 					this
@@ -274,13 +284,7 @@ namespace proto {
 		}
 
 		task* next() {
-			auto& lane = get_thread_local_lane();
-			//spin_lock lane_lock { lane.mutex };
-
-			if (lane.is_empty())
-				return nullptr;
-
-			return lane.pop();
+			return get_thread_local_lane().pop();
 		}
 
 		task* steal() {
@@ -334,7 +338,7 @@ namespace proto {
 
 		template < typename _callback_t, typename _t >
 		task* push_stream_task(_callback_t&& callback, _t* data, std::size_t len) {
-			auto * t = new task ();
+			auto * t = my_alloc.alloc ();
 
 			push_stream (std::forward < _callback_t > (callback), data, data + len, t);
 			return t;
@@ -474,10 +478,12 @@ void SequentialTransforms (benchmark::State& state) {
 	}
 }
 
+proto::executor exe (7);
+
 void ParallelTransforms(benchmark::State& state) {
 
-	proto::executor exe (7);
-	exe.run ();
+	if (!exe.is_running())
+		exe.run();
 
 	for (auto _ : state) {
 
@@ -494,13 +500,11 @@ void ParallelTransforms(benchmark::State& state) {
 			test_data.data (), range);
 	}
 
-	exe.stop();
-
 }
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 BENCHMARK(ParallelTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
