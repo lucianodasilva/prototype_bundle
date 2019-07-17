@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <iostream>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -22,8 +23,8 @@
 
 #include "static_ring_buffer.hpp"
 
-#define MIN_ITERATION_RANGE 1 << 20
-#define MAX_ITERATION_RANGE 1 << 22
+#define MIN_ITERATION_RANGE 1 << 16
+#define MAX_ITERATION_RANGE 1 << 24
 
 using namespace glm;
 
@@ -120,10 +121,8 @@ namespace proto {
 			callback { m_callback },
 			parent {p_parent}
 		{}
-
-
 		
-		std::atomic_uint 	dependencies { 0 };
+		std::atomic_size_t 	dependencies { 0 };
 		callable_type		callback{};
 		task *				parent { nullptr };
 		void*				begin;
@@ -213,7 +212,7 @@ namespace proto {
 			return top == bottom;
 		}
 
-		void run_lane(executor* inst);
+		std::size_t run_lane(executor* inst);
 
 		spin_mutex	mutex;
 
@@ -248,12 +247,15 @@ namespace proto {
 				lane.second.allocator.clear();
 		}
 
-		void wait_for (task * t) {
+		std::size_t wait_for (task * t) {
 			auto& lane = this->get_thread_local_lane();
+			std::size_t exec_tasks = 0;
 
 			while (!t->is_complete()) {
-				lane.run_lane(this);
+				exec_tasks += lane.run_lane(this);
 			}
+
+			return exec_tasks;
 		}
 
 		void run() {
@@ -307,9 +309,9 @@ namespace proto {
 		}
 
 		template < typename _callback_t, typename _t >
-		inline void parallel_for (_callback_t && callback, _t * data, std::size_t length) {
+		inline std::size_t parallel_for (_callback_t && callback, _t * data, std::size_t length) {
 			auto * t = push_stream_task (std::forward < _callback_t > (callback), data, length);
-			wait_for (t);
+			return wait_for (t);
 		}
 
 	private:
@@ -384,7 +386,7 @@ namespace proto {
 				auto * cursor = begin;
 
 				for (int i = 0; i < worker_count; ++i) {
-					int items = blocks_per_thread * block_size;
+					auto items = blocks_per_thread * block_size;
 
 					if (overflow >= cache_size) {
 						items += cache_size;
@@ -407,9 +409,9 @@ namespace proto {
 			} else {
 				parent->dependencies = 1;
 				// add task
-				auto * t = lane.allocator.alloc (callback, parent);
-				t->begin = begin;
-				t->end = end;
+				auto * t	= lane.allocator.alloc (callback, parent);
+				t->begin	= begin;
+				t->end		= end;
 
 				lane.push (t);
 			}
@@ -424,20 +426,23 @@ namespace proto {
 							_thread_lanes;
 	};
 
-	void task_lane::run_lane(executor* inst) {
+	std::size_t task_lane::run_lane(executor* inst) {
 		auto* t = pop();
 
 		if (t) {
 			t->run();
+			return 1;
 		}
-		else {
-			t = inst->steal();
+	
+		t = inst->steal();
 
-			if (t)
-				t->run();
-			else
-				std::this_thread::yield();
-		}
+		if (t) {
+			t->run();
+			return 1;
+		} 
+
+		std::this_thread::yield();
+		return 0;
 	}
 
 }
@@ -446,15 +451,16 @@ void SequentialTransforms (benchmark::State& state) {
 	for (auto _ : state) {
 		auto range = state.range(0);
 
-		for (int i = 0; i < range; ++i) {
-			test_data [i].update_matrix ();
-		}
+		for (int64_t i = 0; i < range; ++i)
+			test_data[i].update_matrix();
 	}
 }
 
-proto::executor exe (3);
+proto::executor exe (7);
 
 void ParallelTransforms(benchmark::State& state) {
+
+	std::size_t tasks_sum = 0, iterations = 0;
 
 	if (!exe.is_running())
 		exe.run();
@@ -464,23 +470,29 @@ void ParallelTransforms(benchmark::State& state) {
 		auto range = state.range(0);
 		exe.clear_alloc();
 
-		exe.parallel_for (
+		tasks_sum += exe.parallel_for (
 			[](void * begin, void * end) {
 				auto * it = static_cast < transformer * > (begin);
-				auto* t_end = static_cast <transformer*> (end);
+				auto * t_end = static_cast < transformer * > (end);
 
-				for (; it != end; ++it) {
+				for (; it < t_end; ++it) {
 					it->update_matrix();
 				}
 			}, 
 			test_data.data (), range);
+
+		++iterations;
 	}
 
+	std::cout << "Average Main Thread Tasks: " << (tasks_sum / iterations) << std::endl;
 }
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-BENCHMARK(ParallelTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(SequentialTransforms)
+	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+
+BENCHMARK(ParallelTransforms)
+	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
