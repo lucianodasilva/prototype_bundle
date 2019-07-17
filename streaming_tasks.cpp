@@ -23,7 +23,7 @@
 
 #include "static_ring_buffer.hpp"
 
-#define MIN_ITERATION_RANGE 1 << 16
+#define MIN_ITERATION_RANGE 1 << 24
 #define MAX_ITERATION_RANGE 1 << 24
 
 using namespace glm;
@@ -212,7 +212,7 @@ namespace proto {
 			return top == bottom;
 		}
 
-		std::size_t run_lane(executor* inst);
+		void run_lane(executor* inst);
 
 		spin_mutex	mutex;
 
@@ -247,15 +247,11 @@ namespace proto {
 				lane.second.allocator.clear();
 		}
 
-		std::size_t wait_for (task * t) {
+		void wait_for (task * t) {
 			auto& lane = this->get_thread_local_lane();
-			std::size_t exec_tasks = 0;
 
-			while (!t->is_complete()) {
-				exec_tasks += lane.run_lane(this);
-			}
-
-			return exec_tasks;
+			while (!t->is_complete())
+				lane.run_lane(this);
 		}
 
 		void run() {
@@ -309,9 +305,9 @@ namespace proto {
 		}
 
 		template < typename _callback_t, typename _t >
-		inline std::size_t parallel_for (_callback_t && callback, _t * data, std::size_t length) {
+		inline void parallel_for (_callback_t && callback, _t * data, std::size_t length) {
 			auto * t = push_stream_task (std::forward < _callback_t > (callback), data, length);
-			return wait_for (t);
+			wait_for (t);
 		}
 
 	private:
@@ -426,23 +422,18 @@ namespace proto {
 							_thread_lanes;
 	};
 
-	std::size_t task_lane::run_lane(executor* inst) {
+	void task_lane::run_lane(executor* inst) {
 		auto* t = pop();
 
-		if (t) {
+		if (t)
 			t->run();
-			return 1;
-		}
 	
 		t = inst->steal();
 
-		if (t) {
+		if (t)
 			t->run();
-			return 1;
-		} 
 
 		std::this_thread::yield();
-		return 0;
 	}
 
 }
@@ -460,8 +451,6 @@ proto::executor exe (7);
 
 void ParallelTransforms(benchmark::State& state) {
 
-	std::size_t tasks_sum = 0, iterations = 0;
-
 	if (!exe.is_running())
 		exe.run();
 
@@ -470,7 +459,7 @@ void ParallelTransforms(benchmark::State& state) {
 		auto range = state.range(0);
 		exe.clear_alloc();
 
-		tasks_sum += exe.parallel_for (
+		exe.parallel_for (
 			[](void * begin, void * end) {
 				auto * it = static_cast < transformer * > (begin);
 				auto * t_end = static_cast < transformer * > (end);
@@ -480,17 +469,13 @@ void ParallelTransforms(benchmark::State& state) {
 				}
 			}, 
 			test_data.data (), range);
-
-		++iterations;
 	}
-
-	std::cout << "Average Main Thread Tasks: " << (tasks_sum / iterations) << std::endl;
 }
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-BENCHMARK(SequentialTransforms)
-	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(SequentialTransforms)
+//	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK(ParallelTransforms)
 	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
