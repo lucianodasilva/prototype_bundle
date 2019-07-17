@@ -94,7 +94,7 @@ namespace proto {
 
 	using spin_lock = std::unique_lock < spin_mutex >;
 
-	using callable_type = std::function < void(void) >;
+	using callable_type = void(*)(void * begin, void * end);
 
 	struct task {
 	public:
@@ -102,7 +102,7 @@ namespace proto {
 		void run() {
 			std::size_t s = sizeof (task);
 			if (callback) {
-				callback();
+				callback(begin, end);
 				executed = true;
 
 				if (parent)
@@ -116,18 +116,49 @@ namespace proto {
 
 		task () = default;
 
-		task (callable_type && m_callback, task * p_parent) :
-			callback { std::move (m_callback) },
+		task (callable_type m_callback, task * p_parent) :
+			callback { m_callback },
 			parent {p_parent}
 		{}
 
 
-		callable_type		callback {};
+		
 		std::atomic_uint 	dependencies { 0 };
+		callable_type		callback{};
 		task *				parent { nullptr };
+		void*				begin;
+		void*				end;
 		std::uint8_t 		_pad_ [8];
 		bool				executed { false };
 	};
+
+	template < typename _t, std::size_t capacity >
+	struct allocator {
+	public:
+
+		inline void clear() {
+			_index = 0;
+		}
+
+		template < typename ... _args_tv >
+		inline task* alloc(_args_tv&& ... args) {
+			if (_index == capacity)
+				throw std::runtime_error("Allocator capacity exceeded");
+
+			task* t = &_data[_index];
+			new (t) _t(std::forward < _args_tv >(args)...);
+
+			++_index;
+			return t;
+		}
+
+	private:
+		std::array < _t, capacity > _data;
+		std::size_t 				_index{ 0 };
+
+	};
+
+	struct executor;
 
 	struct task_lane {
 	public:
@@ -182,7 +213,11 @@ namespace proto {
 			return top == bottom;
 		}
 
+		void run_lane(executor* inst);
+
 		spin_mutex	mutex;
+
+		allocator < task, 4096 > allocator;
 
 	private:
 
@@ -191,32 +226,6 @@ namespace proto {
 
 		std::atomic_size_t top{0};
 		std::atomic_size_t bottom {0};
-	};
-
-	template < typename _t, std::size_t capacity >
-	struct allocator {
-	public:
-
-		inline void clear () {
-			_index = 0;
-		}
-
-		template < typename ... _args_tv >
-		inline task * alloc (_args_tv && ... args) {
-			if (_index == capacity)
-				throw std::runtime_error ("Allocator capacity exceeded");
-
-			task * t = &_data [_index];
-			new (t) _t (std::forward < _args_tv > (args)...);
-
-			++_index;
-			return t;
-		}
-
-	private:
-		std::array < _t, capacity > _data;
-		std::size_t 				_index {0};
-
 	};
 
 	struct executor {
@@ -235,27 +244,15 @@ namespace proto {
 		}
 
 		void clear_alloc () {
-			my_alloc.clear();
+			for (auto& lane : _thread_lanes)
+				lane.second.allocator.clear();
 		}
 
 		void wait_for (task * t) {
+			auto& lane = this->get_thread_local_lane();
+
 			while (!t->is_complete()) {
-				run_lane();
-			}
-		}
-
-		void run_lane () {
-			auto* t = next();
-
-			if (t) {
-				t->run();
-			} else {
-				t = steal();
-
-				if (t)
-					t->run();
-				else
-					std::this_thread::yield();
+				lane.run_lane(this);
 			}
 		}
 
@@ -266,8 +263,10 @@ namespace proto {
 			for (int i = 0; i < _workers.size(); ++i) {
 				_workers[i] = std::thread(
 					[](executor * inst) {
-						while (inst->_running.load (std::memory_order::memory_order_relaxed))
-							inst->run_lane();
+						auto& lane = inst->get_thread_local_lane();
+
+						while (inst->_running)
+							lane.run_lane(inst);
 					}, 
 					this
 				);
@@ -283,43 +282,7 @@ namespace proto {
 			}
 		}
 
-		task* next() {
-			return get_thread_local_lane().pop();
-		}
-
 		task* steal() {
-			/*
-			auto it = _thread_lanes.find(std::this_thread::get_id());
-			
-			if (it == _thread_lanes.end())
-				return nullptr;
-
-			auto my_thread_it = it;
-
-			task * t{ nullptr };
-
-			do {
-				{
-					spin_lock lane_lock { it->second.mutex, std::try_to_lock };
-
-					if (lane_lock && !it->second.tasks.empty()) {
-						t = it->second.tasks.front();
-						it->second.tasks.pop_front();
-
-						break;
-					}
-				}
-
-				++it;
-
-				if (it == _thread_lanes.end())
-					it = _thread_lanes.begin();
-
-			} while (it != my_thread_it);
-
-			return t;
-			*/
-
 			auto rand_index = std::chrono::high_resolution_clock::now().time_since_epoch().count() % (_thread_lanes.size());
 
 			auto it = std::next(_thread_lanes.begin(), rand_index);
@@ -336,11 +299,10 @@ namespace proto {
 			return _thread_lanes[std::this_thread::get_id()];
 		}
 
-		template < typename _callback_t, typename _t >
-		task* push_stream_task(_callback_t&& callback, _t* data, std::size_t len) {
-			auto * t = my_alloc.alloc ();
-
-			push_stream (std::forward < _callback_t > (callback), data, data + len, t);
+		template < typename _t >
+		task* push_stream_task(callable_type callback, _t* data, std::size_t len) {
+			auto * t = get_thread_local_lane ().allocator.alloc ();
+			push_stream (callback, data, data + len, t);
 			return t;
 		}
 
@@ -395,8 +357,8 @@ namespace proto {
 		}
 
 		// Calculate workload and create tasks
-		template < typename _callback_t, typename _t >
-		void push_stream(_callback_t&& callback, _t* begin, _t* end, task * parent) {
+		template < typename _t >
+		void push_stream(callable_type callback, _t* begin, _t* end, task * parent) {
 			auto constexpr type_size { sizeof(_t) };
 			auto const block_size { gcd (type_size, cache_size) };
 
@@ -434,13 +396,9 @@ namespace proto {
 					auto cursor_end = cursor + items;
 
 					// add task
-					auto * t = my_alloc.alloc ();
-
-					t->callback = [=]() {
-						callback(cursor, cursor_end);
-					};
-
-					t->parent = parent;
+					auto * t = lane.allocator.alloc (callback, parent);
+					t->begin = cursor;
+					t->end = cursor_end;
 
 					lane.push(t);
 
@@ -449,15 +407,14 @@ namespace proto {
 			} else {
 				parent->dependencies = 1;
 				// add task
-				auto * t = my_alloc.alloc ([=]() {
-					callback (begin, end);
-				}, parent);
+				auto * t = lane.allocator.alloc (callback, parent);
+				t->begin = begin;
+				t->end = end;
 
 				lane.push (t);
 			}
 		}
 
-		allocator < task, 4096 > my_alloc;
 		std::vector < std::thread > 
 							_workers;
 		std::atomic_bool	_running;
@@ -466,6 +423,23 @@ namespace proto {
 		std::map < std::thread::id, task_lane > 
 							_thread_lanes;
 	};
+
+	void task_lane::run_lane(executor* inst) {
+		auto* t = pop();
+
+		if (t) {
+			t->run();
+		}
+		else {
+			t = inst->steal();
+
+			if (t)
+				t->run();
+			else
+				std::this_thread::yield();
+		}
+	}
+
 }
 
 void SequentialTransforms (benchmark::State& state) {
@@ -478,7 +452,7 @@ void SequentialTransforms (benchmark::State& state) {
 	}
 }
 
-proto::executor exe (7);
+proto::executor exe (3);
 
 void ParallelTransforms(benchmark::State& state) {
 
@@ -491,8 +465,10 @@ void ParallelTransforms(benchmark::State& state) {
 		exe.clear_alloc();
 
 		exe.parallel_for (
-			[=](transformer * begin, transformer * end) {
-				auto * it = begin;
+			[](void * begin, void * end) {
+				auto * it = static_cast < transformer * > (begin);
+				auto* t_end = static_cast <transformer*> (end);
+
 				for (; it != end; ++it) {
 					it->update_matrix();
 				}
@@ -504,7 +480,7 @@ void ParallelTransforms(benchmark::State& state) {
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-//BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(SequentialTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 BENCHMARK(ParallelTransforms)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
