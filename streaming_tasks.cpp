@@ -23,8 +23,8 @@
 
 #include "static_ring_buffer.hpp"
 
-#define MIN_ITERATION_RANGE 1 << 24
-#define MAX_ITERATION_RANGE 1 << 24
+#define MIN_ITERATION_RANGE 1 << 16
+#define MAX_ITERATION_RANGE 1 << 18
 
 using namespace glm;
 
@@ -71,7 +71,7 @@ auto test_data{ generate_data(MAX_ITERATION_RANGE) };
 
 // prototype implementation
 namespace proto {
-
+	/*
 	struct spin_mutex {
 	public:
 
@@ -91,9 +91,9 @@ namespace proto {
 
 		std::atomic_flag _lockless_flag = ATOMIC_FLAG_INIT;
 
-	};
+	};*/
 
-	using spin_lock = std::unique_lock < spin_mutex >;
+	//using spin_lock = std::unique_lock < spin_mutex >;
 
 	using callable_type = void(*)(void * begin, void * end);
 
@@ -104,7 +104,6 @@ namespace proto {
 			std::size_t s = sizeof (task);
 			if (callback) {
 				callback(begin, end);
-				executed = true;
 
 				if (parent)
 					--(parent->dependencies);
@@ -112,7 +111,7 @@ namespace proto {
 		}
 
 		bool is_complete() const {
-			return dependencies == 0 || executed;
+			return dependencies == 0;
 		}
 
 		task () = default;
@@ -128,7 +127,6 @@ namespace proto {
 		void*				begin;
 		void*				end;
 		std::uint8_t 		_pad_ [8];
-		bool				executed { false };
 	};
 
 	template < typename _t, std::size_t capacity >
@@ -214,24 +212,25 @@ namespace proto {
 
 		void run_lane(executor* inst);
 
-		spin_mutex	mutex;
-
-		allocator < task, 4096 > allocator;
+		allocator < task, 4096 > 
+							allocator;
+		std::thread			worker;
+		std::thread::id		id;
 
 	private:
 
 		std::array  < task*, 4096 >
-			tasks;
+							tasks;
 
-		std::atomic_size_t top{0};
-		std::atomic_size_t bottom {0};
+		std::atomic_size_t	top{0};
+		std::atomic_size_t	bottom {0};
 	};
 
 	struct executor {
 	public:
 
 		executor(std::size_t worker_count) :
-			_workers(worker_count)
+			_lanes(worker_count + 1)
 		{}
 
 		~executor () {
@@ -243,8 +242,8 @@ namespace proto {
 		}
 
 		void clear_alloc () {
-			for (auto& lane : _thread_lanes)
-				lane.second.allocator.clear();
+			for (auto& lane : _lanes)
+				lane.allocator.clear();
 		}
 
 		void wait_for (task * t) {
@@ -258,15 +257,18 @@ namespace proto {
 			// setup workers
 			_running = true;
 
-			for (int i = 0; i < _workers.size(); ++i) {
-				_workers[i] = std::thread(
-					[](executor * inst) {
-						auto& lane = inst->get_thread_local_lane();
+			_lanes[0].id = std::this_thread::get_id();
+
+			for (int i = 1; i < _lanes.size(); ++i) {
+				_lanes[i].worker = std::thread(
+					[](executor * inst, task_lane * lane) {
+						lane->id = std::this_thread::get_id();
 
 						while (inst->_running)
-							lane.run_lane(inst);
-					}, 
-					this
+							lane->run_lane(inst);
+					},
+					this,
+					& _lanes[i]
 				);
 			}
 		}
@@ -274,27 +276,26 @@ namespace proto {
 		void stop() {
 			_running = false;
 
-			for (auto& worker : _workers) {
-				if (worker.joinable())
-					worker.join();
+			for (auto& lane : _lanes) {
+				if (lane.worker.joinable())
+					lane.worker.join();
 			}
 		}
 
 		task* steal() {
-			auto rand_index = std::chrono::high_resolution_clock::now().time_since_epoch().count() % (_thread_lanes.size());
-
-			auto it = std::next(_thread_lanes.begin(), rand_index);
-
-			if (it->first == std::this_thread::get_id()) {
-				return nullptr;
-			}
-
-			return it->second.steal();
+			//auto rand_index = std::chrono::high_resolution_clock::now().time_since_epoch().count() % (_lanes.size());
+			return _lanes[0].steal();
 		}
 
 		task_lane& get_thread_local_lane() {
-			spin_lock lock(_lane_mutex);
-			return _thread_lanes[std::this_thread::get_id()];
+			auto id = std::this_thread::get_id();
+
+			for (auto& lane : _lanes) {
+				if (lane.id == id)
+					return lane;
+			}
+
+			return _lanes[0];
 		}
 
 		template < typename _t >
@@ -357,6 +358,7 @@ namespace proto {
 		// Calculate workload and create tasks
 		template < typename _t >
 		void push_stream(callable_type callback, _t* begin, _t* end, task * parent) {
+			
 			auto constexpr type_size { sizeof(_t) };
 			auto const block_size { gcd (type_size, cache_size) };
 
@@ -365,7 +367,7 @@ namespace proto {
 			auto blocks = len / block_size;
 			auto overflow = len % block_size;
 
-			auto worker_count = _workers.size() + 1; // +1 = main thread
+			auto worker_count = _lanes.size();
 			auto blocks_per_thread = blocks / worker_count;
 
 			overflow += (blocks_per_thread % worker_count) * block_size;
@@ -411,26 +413,39 @@ namespace proto {
 
 				lane.push (t);
 			}
+
+			/*
+
+			auto& lane = get_thread_local_lane();
+
+			auto len = end - begin;
+			auto lane_count = _lanes.size();
+			auto task_size = len / lane_count;
+
+			parent->dependencies = lane_count;
+
+			for (int i = 0; i < lane_count; ++i) {
+				auto* t = lane.allocator.alloc(callback, parent);
+				t->begin = begin;
+				begin += task_size;
+				t->end = begin;
+
+				lane.push(t);
+			}
+
+			*/
 		}
 
-		std::vector < std::thread > 
-							_workers;
+		std::vector < task_lane > 
+							_lanes;
 		std::atomic_bool	_running;
 
-		spin_mutex			_lane_mutex;
-		std::map < std::thread::id, task_lane > 
-							_thread_lanes;
 	};
 
 	void task_lane::run_lane(executor* inst) {
-		auto* t = pop();
+		task* t{ nullptr };
 
-		if (t)
-			t->run();
-	
-		t = inst->steal();
-
-		if (t)
+		if ((t = pop()) || (t = inst->steal()))
 			t->run();
 
 		std::this_thread::yield();
@@ -447,7 +462,7 @@ void SequentialTransforms (benchmark::State& state) {
 	}
 }
 
-proto::executor exe (7);
+proto::executor exe (3);
 
 void ParallelTransforms(benchmark::State& state) {
 
