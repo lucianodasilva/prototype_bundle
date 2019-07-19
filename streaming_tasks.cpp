@@ -23,7 +23,7 @@
 
 #include "static_ring_buffer.hpp"
 
-#define MIN_ITERATION_RANGE 1 << 16
+#define MIN_ITERATION_RANGE 1 << 18
 #define MAX_ITERATION_RANGE 1 << 18
 
 using namespace glm;
@@ -40,19 +40,17 @@ struct camera {
 };
 
 struct transformer {
+	mat4 matrix;
+
 	vec3 position;
 	quat orientation;
 	vec3 scale;
 
 	inline void update_matrix () {
-		matrix = glm::scale(
-			translate(
-				mat4_cast(orientation), 
-				position), 
-			scale);
+		matrix = glm::translate (matrix, position);
+		//matrix = glm::mat4_cast (orientation) * matrix;
+		//glm::scale (matrix, scale);
 	}
-
-	mat4 matrix;
 };
 
 std::vector < transformer > generate_data(std::size_t count) {
@@ -95,19 +93,17 @@ namespace proto {
 
 	//using spin_lock = std::unique_lock < spin_mutex >;
 
-	using callable_type = void(*)(void * begin, void * end);
+	using callable_type = void(*)(void * begin, std::size_t length);
 
 	struct task {
 	public:
 
 		void run() {
-			std::size_t s = sizeof (task);
-			if (callback) {
-				callback(begin, end);
+			if (callback)
+				callback(data, data_length);
 
-				if (parent)
-					--(parent->dependencies);
-			}
+			if (parent)
+				--(parent->dependencies);
 		}
 
 		bool is_complete() const {
@@ -120,12 +116,12 @@ namespace proto {
 			callback { m_callback },
 			parent {p_parent}
 		{}
-		
+
 		std::atomic_size_t 	dependencies { 0 };
 		callable_type		callback{};
 		task *				parent { nullptr };
-		void*				begin;
-		void*				end;
+		void*				data;
+		std::size_t			data_length;
 		std::uint8_t 		_pad_ [8];
 	};
 
@@ -169,8 +165,8 @@ namespace proto {
 		}
 
 		task * pop () {
-			auto b = bottom.fetch_sub(1, std::memory_order::memory_order_relaxed) - 1;
-			auto t = top.load (std::memory_order::memory_order_relaxed);
+			auto b = bottom.fetch_sub(1) - 1;
+			auto t = top.load ();
 
 			if (t <= b) {
 				task * task_instance = tasks [b & mask];
@@ -212,8 +208,8 @@ namespace proto {
 
 		void run_lane(executor* inst);
 
-		allocator < task, 4096 > 
-							allocator;
+		allocator < task, 65536 >
+							local_allocator;
 		std::thread			worker;
 		std::thread::id		id;
 
@@ -243,7 +239,7 @@ namespace proto {
 
 		void clear_alloc () {
 			for (auto& lane : _lanes)
-				lane.allocator.clear();
+				lane.local_allocator.clear();
 		}
 
 		void wait_for (task * t) {
@@ -300,14 +296,14 @@ namespace proto {
 
 		template < typename _t >
 		task* push_stream_task(callable_type callback, _t* data, std::size_t len) {
-			auto * t = get_thread_local_lane ().allocator.alloc ();
-			push_stream (callback, data, data + len, t);
+			auto * t = get_thread_local_lane ().local_allocator.alloc ();
+			push_stream (callback, data, len, t);
 			return t;
 		}
 
 		template < typename _callback_t, typename _t >
-		inline void parallel_for (_callback_t && callback, _t * data, std::size_t length) {
-			auto * t = push_stream_task (std::forward < _callback_t > (callback), data, length);
+		inline void parallel_for (_callback_t callback, _t * data, std::size_t length) {
+			auto * t = push_stream_task (callback, data, length);
 			wait_for (t);
 		}
 
@@ -342,7 +338,7 @@ namespace proto {
 		long const cache_size { sysconf (_SC_LEVEL1_DCACHE_LINESIZE) };
 #endif
 
-		inline static int gcd (int a, int b) noexcept {
+		inline static std::size_t gcd (std::size_t a, std::size_t b) noexcept {
 			//return a == 0 ? b : gcd (b % a, a);
 
 			for (;;) {
@@ -357,12 +353,45 @@ namespace proto {
 
 		// Calculate workload and create tasks
 		template < typename _t >
-		void push_stream(callable_type callback, _t* begin, _t* end, task * parent) {
-			
+		void push_stream(callable_type callback, _t* begin, std::size_t len, task * parent) {
+/*
+			// divide per cache line multiple --------------------------------
+			auto constexpr type_size { sizeof(_t) };
+			auto const block_size { gcd (type_size, cache_size) * 4 };
+
+			auto blocks = len / block_size;
+			auto rem = len % block_size;
+
+			decltype (len) offset { 0 };
+
+			// -------------------------------------
+			// create tasks
+			// -------------------------------------
+			auto & lane = get_thread_local_lane ();
+			parent->dependencies = blocks + (rem > 0 ? 1 : 0);
+
+			while (offset < len) {
+				// add task
+				auto * t = lane.local_allocator.alloc (callback, parent);
+
+				t->data 		= begin + offset;
+				t->data_length 	= block_size;
+
+				offset 			+= block_size;
+
+				if (offset < len)
+					t->data_length = block_size;
+				else
+					t->data_length = rem;
+
+				lane.push(t);
+			}
+*/
+
+			// divide per worker --------------------------------
+
 			auto constexpr type_size { sizeof(_t) };
 			auto const block_size { gcd (type_size, cache_size) };
-
-			auto len = end - begin;
 
 			auto blocks = len / block_size;
 			auto overflow = len % block_size;
@@ -376,7 +405,6 @@ namespace proto {
 			// create tasks
 			// -------------------------------------
 			auto & lane = get_thread_local_lane ();
-			//spin_lock lane_lock { lane.mutex };
 
 			if (blocks_per_thread > 0) {
 				parent->dependencies = worker_count;
@@ -396,9 +424,9 @@ namespace proto {
 					auto cursor_end = cursor + items;
 
 					// add task
-					auto * t = lane.allocator.alloc (callback, parent);
-					t->begin = cursor;
-					t->end = cursor_end;
+					auto * t = lane.local_allocator.alloc (callback, parent);
+					t->data = cursor;
+					t->data_length = items;
 
 					lane.push(t);
 
@@ -407,12 +435,14 @@ namespace proto {
 			} else {
 				parent->dependencies = 1;
 				// add task
-				auto * t	= lane.allocator.alloc (callback, parent);
-				t->begin	= begin;
-				t->end		= end;
+				auto * t	= lane.local_allocator.alloc (callback, parent);
+				t->data	= begin;
+				t->data_length = len;
 
 				lane.push (t);
 			}
+
+			// linear
 
 			/*
 
@@ -425,7 +455,7 @@ namespace proto {
 			parent->dependencies = lane_count;
 
 			for (int i = 0; i < lane_count; ++i) {
-				auto* t = lane.allocator.alloc(callback, parent);
+				auto* t = lane.local_allocator.alloc(callback, parent);
 				t->begin = begin;
 				begin += task_size;
 				t->end = begin;
@@ -462,7 +492,14 @@ void SequentialTransforms (benchmark::State& state) {
 	}
 }
 
-proto::executor exe (3);
+proto::executor exe (8);
+
+void parallel_for_runner (void * begin, std::size_t length) {
+	auto * it = static_cast < transformer * > (begin);
+
+	for (std::size_t i = 0; i < length; ++i)
+		it[i].update_matrix();
+}
 
 void ParallelTransforms(benchmark::State& state) {
 
@@ -475,22 +512,15 @@ void ParallelTransforms(benchmark::State& state) {
 		exe.clear_alloc();
 
 		exe.parallel_for (
-			[](void * begin, void * end) {
-				auto * it = static_cast < transformer * > (begin);
-				auto * t_end = static_cast < transformer * > (end);
-
-				for (; it < t_end; ++it) {
-					it->update_matrix();
-				}
-			}, 
+			parallel_for_runner,
 			test_data.data (), range);
 	}
 }
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-//BENCHMARK(SequentialTransforms)
-//	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(SequentialTransforms)
+	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK(ParallelTransforms)
 	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
