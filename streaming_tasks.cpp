@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <vector>
+#include <future>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -23,9 +24,8 @@
 
 #include "static_ring_buffer.hpp"
 
-#define MIN_ITERATION_RANGE 1 << 18
-#define MAX_ITERATION_RANGE 1 << 18
-
+#define MIN_ITERATION_RANGE 1 << 14
+#define MAX_ITERATION_RANGE 1 << 24
 using namespace glm;
 
 // data and tasks 
@@ -48,8 +48,8 @@ struct transformer {
 
 	inline void update_matrix () {
 		matrix = glm::translate (matrix, position);
-		//matrix = glm::mat4_cast (orientation) * matrix;
-		//glm::scale (matrix, scale);
+		matrix = glm::mat4_cast (orientation) * matrix;
+		glm::scale (matrix, scale);
 	}
 };
 
@@ -137,7 +137,7 @@ namespace proto_a {
 		inline task* alloc(_args_tv&& ... args) {
 			if (_index == _data.size())
 				throw std::runtime_error("Allocator capacity exceeded");
-
+			
 			task* t = &_data[_index];
 			new (t) _t(std::forward < _args_tv >(args)...);
 
@@ -157,12 +157,38 @@ namespace proto_a {
 	public:
 
 		static constexpr std::size_t mask { 4096 - 1 };
+		
+		void push(task* task_inst) {
+			auto index = bottom.load (std::memory_order_acquire);
+			tasks[index & mask] = task_inst;
 
+			bottom.store(index + 1, std::memory_order_release);
+			++tasks_pushed;
+		}
+
+		/*
+		task* pop() {
+			auto b = bottom.load();
+			auto t = top.load();
+
+			if (t < b) {
+				auto* task = tasks[b - 1];
+
+				if (bottom.compare_exchange_weak(b, b - 1))
+					return task;
+			}
+
+			return nullptr;
+		}
+
+		
 		void push (task * tast_inst) {
 			auto b = bottom.load ();
 			tasks [b & mask] = tast_inst;
-			++bottom;
-		}
+
+			bottom.store(b + 1);
+			++tasks_pushed;
+		}*/
 
 		task * pop () {
 			auto b = bottom.fetch_sub(1) - 1;
@@ -174,17 +200,17 @@ namespace proto_a {
 				if (t != b)
 					return task_instance;
 
-				auto tmp_t{ t };
-				if (!top.compare_exchange_weak (tmp_t, t + 1))
+				auto t_plus { t + 1 };
+				if (!top.compare_exchange_strong (t, t_plus))
 					task_instance = nullptr;
 
-				bottom.store (t + 1);
+				bottom.store (t_plus);
 				return task_instance;
 			} else {
 				bottom.store(t);
 				return nullptr;
 			}
-		}
+		} 
 
 		task * steal () {
 			auto t = top.load ();
@@ -193,13 +219,11 @@ namespace proto_a {
 			if (t < b)  {
 				auto * task_inst = tasks [t & mask];
 
-				if (!top.compare_exchange_weak(t, t + 1))
-					return nullptr;
+				if (top.compare_exchange_strong(t, t + 1))
+					return task_inst;
+			} 
 
-				return task_inst;
-			} else {
-				return nullptr;
-			}
+			return nullptr;
 		}
 
 		bool is_empty() const noexcept {
@@ -215,12 +239,13 @@ namespace proto_a {
 		std::thread::id			id;
 
 		allocator < task >		local_allocator;
-
 		std::vector < task* >	tasks{ 4096 };
 
 		std::thread				worker;
+		std::atomic_bool		running;
 
-		
+		std::size_t				tasks_executed{ 0 };
+		std::size_t				tasks_pushed { 0 };
 	};
 
 	struct executor {
@@ -231,11 +256,8 @@ namespace proto_a {
 		{}
 
 		~executor () {
+			std::cout << "executions: " << executions << std::endl;
 			stop();
-		}
-
-		inline bool is_running () const noexcept {
-			return _running;
 		}
 
 		void clear_alloc () {
@@ -251,19 +273,22 @@ namespace proto_a {
 		}
 
 		void run() {
-			// setup workers
-			_running = true;
+			if (_lanes[0].running)
+				return;
 
+			// setup workers
 			_lanes[0].id = std::this_thread::get_id();
 			_lanes[0].exec = this;
+			_lanes[0].running = true;
 
 			for (int i = 1; i < _lanes.size(); ++i) {
 				_lanes[i].worker = std::thread(
 					[](executor * exec, task_lane * lane) {
 						lane->exec = exec;
 						lane->id = std::this_thread::get_id();
+						lane->running = true;
 
-						while (exec->_running)
+						while (lane->running)
 							lane->run_lane();
 					},
 					this,
@@ -273,11 +298,14 @@ namespace proto_a {
 		}
 
 		void stop() {
-			_running = false;
 
 			for (auto& lane : _lanes) {
+				lane.running = false;
+
 				if (lane.worker.joinable())
 					lane.worker.join();
+
+				std::cout << "lane for thread: " << lane.id << " | pushed: " << lane.tasks_pushed << " | executed: " << lane.tasks_executed << std::endl;
 			}
 		}
 
@@ -305,6 +333,8 @@ namespace proto_a {
 			
 			wait_for (t);
 		}
+
+		std::size_t executions{ 0 };
 
 	private:
 #if defined (_WIN32)
@@ -467,7 +497,6 @@ namespace proto_a {
 
 		std::vector < task_lane > 
 							_lanes;
-		std::atomic_bool	_running;
 
 	};
 
@@ -477,11 +506,200 @@ namespace proto_a {
 		if (!t)
 			t = exec->steal();
 
-		if (t)
+		if (t) {
 			t->run();
+			++tasks_executed;
+		}
 
 		std::this_thread::yield();
 	}
+
+}
+
+namespace proto_b {
+
+	using task_callback = void (*)(transformer*, std::size_t);
+
+	struct task {
+	public:
+		
+		task_callback	callback;
+		task*			parent;
+		transformer*	data;
+		std::size_t		length;
+
+		std::atomic_size_t
+						unresolved_children;
+
+		std::uint8_t	_padding_ [24];
+	};
+
+	struct lane {
+	public:
+
+		void push(task* t) noexcept {
+			auto b = back.load(std::memory_order_acquire);
+			tasks[b & mask] = t;
+			back.store(b + 1, std::memory_order_release);
+		}
+
+		task* pop() noexcept {
+			auto b = back.fetch_sub(1) - 1;
+			auto f = front.load();
+
+			if (f <= b) {
+				task* t = tasks[b & mask];
+
+				if (f != b)
+					return t;
+
+				auto f_plus{ f + 1 };
+				if (!front.compare_exchange_strong(f, f_plus))
+					t = nullptr;
+
+				back.store(f_plus);
+				return t;
+			}
+			else {
+				back.store(f);
+				return nullptr;
+			}
+		}
+
+		task* steal() noexcept {
+			auto f = front.load();
+			auto b = back.load();
+
+			if (f < b) {
+				auto* t = tasks[f & mask];
+
+				if (front.compare_exchange_strong(f, f + 1))
+					return t;
+			}
+
+			return nullptr;
+		}
+
+		inline task* alloc() noexcept {
+			++task_buffer_index;
+			return task_buffer.get() + task_buffer_index;
+		}
+
+		inline void alloc_free() noexcept {
+			task_buffer_index = 0;
+		}
+
+		std::atomic_size_t
+			front{ 0 },
+			back { 0 };
+
+		std::atomic_bool
+			running{ false };
+
+		// off critical path ( good ? / bad ? )
+		std::unique_ptr < task* [] > tasks { new task * [4096] };
+		std::unique_ptr < task [] >	 task_buffer { new task [4096] };
+
+		std::size_t task_buffer_index{ 0 };
+
+		uint8_t _padding_ [16];
+
+		static constexpr std::size_t mask{ 4096 - 1 };
+	};
+
+	struct executor {
+	public:
+
+		executor(unsigned t_count) :
+			lanes(t_count),
+			workers (t_count),
+			thread_count (t_count)
+		{}
+
+		~executor() {
+			for (auto& lane : lanes)
+				lane.running = false;
+		}
+
+		inline static void run_lane(std::vector < lane > & lanes, lane & l, unsigned i) {
+			auto* t = l.pop();
+
+			if (!t) {
+				auto rand_index = std::chrono::high_resolution_clock::now().time_since_epoch().count() % (lanes.size());
+
+				if (rand_index != i)
+					t = lanes[rand_index].steal();
+			}
+
+			if (t) {
+				t->callback(t->data, t->length);
+
+				if (t->parent)
+					--(t->parent->unresolved_children);
+			}
+
+			std::this_thread::yield();
+		}
+
+		void run() {
+			if (lanes[0].running)
+				return;
+
+			lanes[0].running = true;
+
+			// init workers 
+			for (unsigned i = 1; i < thread_count; ++i) {
+				workers [i] = std::thread ([this, i]() {
+					auto& lane = lanes[i];
+
+					lane.running = true;
+
+					while (lane.running)
+						run_lane(lanes, lane, i);
+				});
+			}
+		}
+
+		void wait_for(task* t) {
+			while (t->unresolved_children > 0) {
+				run_lane(lanes, lanes[0], 0);
+			}	
+		}
+
+		void run_parallel(task_callback callback, transformer* data, std::size_t length) {
+
+			auto& lane = lanes[0];
+
+			task* parent = lane.alloc();
+			parent->unresolved_children = thread_count;
+
+			auto stride = length / thread_count;
+			auto rem = length % thread_count;
+
+			for (unsigned i = 0; i < thread_count; ++i) {
+				auto offset = i * stride;
+
+				if (i == thread_count - 1)
+					stride = stride + rem;
+
+				task* t = lane.alloc();
+				
+				t->callback = callback;
+				t->data = data + offset;
+				t->length = stride;
+				t->parent = parent;
+
+				lane.push(t);
+			}
+
+			wait_for(parent);
+			lane.alloc_free();
+		}
+
+		std::vector < lane >	lanes;
+		std::vector < std::thread >	workers;
+		unsigned const			thread_count;
+	};
 
 }
 
@@ -494,7 +712,37 @@ void SequentialTransforms (benchmark::State& state) {
 	}
 }
 
-proto_a::executor exe_a (3);
+#define THREAD_COUNT 4
+
+void CPPAsyncTransforms(benchmark::State& state) {
+
+	std::vector < std::future < void > > sync(THREAD_COUNT);
+
+	for (auto _ : state) {
+
+		auto len = state.range(0);
+		auto stride = len / THREAD_COUNT;
+		auto rem = len % THREAD_COUNT;
+
+		for (unsigned i = 0; i < THREAD_COUNT; ++i) {
+			auto offset = i * stride;
+
+			if (i == THREAD_COUNT - 1)
+				stride = stride + rem;
+
+			sync[i] = std::async(std::launch::async, [=]() {
+				for (unsigned j = offset; j < stride; ++j)
+					test_data[j].update_matrix();
+				});
+		}
+
+		for (unsigned i = 0; i < THREAD_COUNT; ++i)
+			sync[i].get();
+	}
+}
+
+proto_a::executor exe_a (THREAD_COUNT - 1);
+proto_b::executor exe_b(THREAD_COUNT);
 
 void parallel_for_runner (void * begin, std::size_t length) {
 	auto * it = static_cast < transformer * > (begin);
@@ -503,12 +751,13 @@ void parallel_for_runner (void * begin, std::size_t length) {
 		it[i].update_matrix();
 }
 
-void ParallelTransforms(benchmark::State& state) {
+void ParallelTransforms_A(benchmark::State& state) {
 
-	if (!exe_a.is_running())
-		exe_a.run();
+	exe_a.run();
 
 	for (auto _ : state) {
+
+		++exe_a.executions;
 
 		auto range = state.range(0);
 		exe_a.clear_alloc();
@@ -519,12 +768,35 @@ void ParallelTransforms(benchmark::State& state) {
 	}
 }
 
-#define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
+void ParallelTransforms_B(benchmark::State& state) {
 
+	exe_b.run();
+
+	for (auto _ : state) {
+
+		auto range = state.range(0);
+
+		exe_b.run_parallel([](transformer* data, std::size_t length) {
+				for (std::size_t i = 0; i < length; ++i)
+					data[i].update_matrix();
+			},
+			test_data.data(),
+			range);
+	}
+}
+
+#define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
+/*
 BENCHMARK(SequentialTransforms)
 	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
-BENCHMARK(ParallelTransforms)
+BENCHMARK(CPPAsyncTransforms)
+	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+
+BENCHMARK(ParallelTransforms_A)
+	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+	*/
+BENCHMARK(ParallelTransforms_B)
 	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();
