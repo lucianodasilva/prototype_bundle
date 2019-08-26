@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.9)
 project(prototype_bundle)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 option (build_make_it "Build make_it" OFF)
 
@@ -87,6 +87,17 @@ if (build_streaming_tasks)
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
         target_compile_options(streaming_tasks PUBLIC
                 $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
+    endif()
+
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+        target_compile_options(streaming_tasks PUBLIC
+                $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
+
+        #target_compile_options(streaming_tasks PUBLIC
+        #        -fsanitize=thread)
+
+        #target_link_options(streaming_tasks PUBLIC
+        #        -fsanitize=thread)
     endif()
 
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
