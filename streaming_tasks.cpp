@@ -342,8 +342,7 @@ namespace proto_d {
 
 				back.store(f_plus, std::memory_order_release);
 				return t;
-			}
-			else {
+			} else {
 				back.store(f, std::memory_order_release);
 				return nullptr;
 			}
@@ -379,8 +378,8 @@ namespace proto_d {
 			back { 0 };
 
 		// off critical path ( good ? / bad ? )
-		std::unique_ptr < task* [] > tasks { new task * [4096] };
-		std::unique_ptr < task [] >	 task_buffer { new task [4096] };
+		std::unique_ptr < task * [] >	tasks		{ new task * [4096] };
+		std::unique_ptr < task [] >		task_buffer	{ new task [4096] };
 
 		std::size_t task_buffer_index{ 0 };
 
@@ -588,7 +587,7 @@ void PROTO_D(benchmark::State& state) {
 
 		auto range = state.range(0);
 
-		exe_d.run_parallel([](transformer * data, std::size_t length) {
+		exe_d.run_parallel([](auto * data, std::size_t length) {
 							   for (std::size_t i = 0; i < length; ++i)
 								   data[i].update_matrix();
 						   },
