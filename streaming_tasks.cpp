@@ -312,7 +312,7 @@ namespace proto_d {
 		proto_d::task * task;
 	};
 
-	using task_callback = void (*)(exec_context & cxt, void *, std::size_t );
+	using task_callback = std::function < void (exec_context &, void *, std::size_t ) >;
 
 	struct alignas (32) task {
 	public:
@@ -630,8 +630,6 @@ void PROTO_D(benchmark::State& state) {
 						   test_data.data(),
 						   range);
 	}
-
-	exe_d.stop ();
 }
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
@@ -640,11 +638,11 @@ void PROTO_D(benchmark::State& state) {
 BENCHMARK(SequentialTransforms)
 	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 */
-//BENCHMARK(BASELINE)
-//	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(BASELINE)
+	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
-BENCHMARK(PROTO_C)
-->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(PROTO_C)
+//->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK(PROTO_D)
 ->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
