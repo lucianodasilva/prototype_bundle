@@ -166,6 +166,10 @@ namespace proto_c {
 		{}
 
 		~executor() {
+			stop ();
+		}
+
+		inline void stop () {
 			for (auto& lane : lanes) {
 				lane.running = false;
 			}
@@ -174,7 +178,6 @@ namespace proto_c {
 				if (workers [i].joinable())
 					workers[i].join();
 			}
-
 		}
 
 		inline static void run_lane(std::vector < lane > & lanes, lane & l, unsigned i) {
@@ -407,6 +410,10 @@ namespace proto_d {
 		{}
 
 		~executor() {
+			stop ();
+		}
+
+		inline void stop () {
 			for (auto& lane : lanes) {
 				lane.running = false;
 			}
@@ -415,7 +422,6 @@ namespace proto_d {
 				if (workers [i].joinable())
 					workers[i].join();
 			}
-
 		}
 
 		inline static void run_lane(std::vector < lane > & lanes, lane & l, unsigned i) {
@@ -603,6 +609,8 @@ void PROTO_C(benchmark::State& state) {
 			test_data.data(),
 			range);
 	}
+
+	exe_c.stop();
 }
 
 void PROTO_D(benchmark::State& state) {
@@ -622,6 +630,8 @@ void PROTO_D(benchmark::State& state) {
 						   test_data.data(),
 						   range);
 	}
+
+	exe_d.stop ();
 }
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
