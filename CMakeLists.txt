@@ -93,6 +93,8 @@ if (build_streaming_tasks)
         target_compile_options(streaming_tasks PUBLIC
                 $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
 
+        target_link_libraries(streaming_tasks PUBLIC tbb)
+
         #target_compile_options(streaming_tasks PUBLIC
         #        -fsanitize=thread)
 
