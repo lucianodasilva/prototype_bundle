@@ -6,6 +6,7 @@
 #include <glm/gtc/random.hpp>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <execution>
 #include <vector>
@@ -13,14 +14,13 @@
 #include <functional>
 #include <memory>
 #include <thread>
-#include <experimental/algorithm>
+
 
 #if defined (_WIN32)
 #include <Windows.h>
 #else
 #include <unistd.h>
 #include <functional>
-
 #endif
 
 #include "static_ring_buffer.hpp"
@@ -28,7 +28,7 @@
 #define MIN_ITERATION_RANGE 1 << 14
 #define MAX_ITERATION_RANGE 1 << 20
 
-#define THREAD_COUNT 12
+#define THREAD_COUNT std::thread::hardware_concurrency()
 
 using namespace glm;
 
@@ -304,29 +304,19 @@ namespace proto_c {
 
 namespace proto_d {
 
-	struct task;
-	struct lane;
+	using task_callback = std::function < void () >;
 
-	struct exec_context {
-		proto_d::lane & lane;
-		proto_d::task * task;
-	};
-
-	using task_callback = std::function < void (exec_context &, void *, std::size_t ) >;
-
-	struct alignas (32) task {
+	struct alignas (std::hardware_constructive_interference_size) task {
 	public:
 
 		task_callback	callback;
-		task const *	parent;
-		transformer*	data;
-		std::size_t		length;
+		task *			parent;
 
-		mutable std::atomic_size_t
-			unresolved_children;
+		std::atomic_size_t
+						unresolved_children;
 	};
 
-	struct alignas (32) lane {
+	struct alignas (std::hardware_constructive_interference_size) lane {
 	public:
 
 		void push(task* t) noexcept {
@@ -435,8 +425,7 @@ namespace proto_d {
 			}
 
 			if (t) {
-				exec_context cxt {l, t};
-				t->callback(cxt, t->data, t->length);
+				t->callback();
 
 				if (t->parent) {
 					t->parent->unresolved_children.fetch_sub(1);
@@ -473,58 +462,36 @@ namespace proto_d {
 			}
 		}
 
-		void static divide_and_conquer (exec_context & cxt, void * data, std::size_t length) {
-			constexpr std::size_t slice_length { 1024 };
-			auto * t_data = reinterpret_cast<transformer *> (data);
+		template < typename _callback_t, typename _data_t >
+		inline void run_parallel(_callback_t callback, _data_t * data, std::size_t length) {
+			auto& lane = get_this_lane();
 
-			auto * ta = cxt.lane.alloc ();
-			auto * tb = cxt.lane.alloc ();
+			task* parent = lane.alloc();
+			parent->unresolved_children = thread_count;
 
-			ta->parent = tb->parent = cxt.task->parent;
+			auto stride = length / thread_count;
+			auto rem = length % thread_count;
 
-			if (length > (cxt.task->parent->length / 48)) {
-				ta->callback = tb->callback = &divide_and_conquer;
-			} else {
-				ta->callback = tb->callback = cxt.task->parent->callback;
+			for (unsigned i = 0; i < thread_count; ++i) {
+				auto offset = i * stride;
+
+				if (i == thread_count - 1)
+					stride = stride + rem;
+
+				task* t = lane.alloc();
+
+				t->callback = [=]() { 
+					callback(data + offset, stride);
+				};
+
+				t->parent = parent;
+
+				lane.push(t);
 			}
 
-			ta->data = t_data;
-			ta->length = length / 2;
+			wait_for(parent);
 
-			tb->data = t_data + ta->length;
-			tb->length = length - ta->length;
-
-			cxt.task->parent->unresolved_children.fetch_add(2);
-
-			cxt.lane.push(ta);
-			cxt.lane.push(tb);
-		}
-
-		void run_parallel(task_callback callback, transformer* data, std::size_t length) {
-
-			auto & lane = get_this_lane();
-
-			auto * parent = lane.alloc();
-			parent->callback = callback;
-			parent->unresolved_children.store (1);
-
-			parent->data = data;
-			parent->length = length;
-			parent->parent = nullptr;
-
-			auto * t = lane.alloc ();
-
-			t->data 	= data;
-			t->length 	= length;
-			t->parent 	= parent;
-
-			t->callback = &divide_and_conquer;
-
-			lane.push (t);
-
-			wait_for (parent);
-
-			for (auto & flane : lanes)
+			for (auto& flane : lanes)
 				flane.alloc_free();
 		}
 
@@ -541,7 +508,7 @@ namespace proto_d {
 
 		std::vector < lane >		lanes;
 		std::vector < std::thread >	workers;
-		unsigned const			thread_count;
+		unsigned const				thread_count;
 	};
 
 }
@@ -621,11 +588,9 @@ void PROTO_D(benchmark::State& state) {
 
 		auto range = state.range(0);
 
-		exe_d.run_parallel([](proto_d::exec_context &, void * data, std::size_t length) {
-							   auto * t_data = reinterpret_cast < transformer * > (data);
-
+		exe_d.run_parallel([](transformer * data, std::size_t length) {
 							   for (std::size_t i = 0; i < length; ++i)
-								   t_data[i].update_matrix();
+								   data[i].update_matrix();
 						   },
 						   test_data.data(),
 						   range);
@@ -638,8 +603,8 @@ void PROTO_D(benchmark::State& state) {
 BENCHMARK(SequentialTransforms)
 	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 */
-BENCHMARK(BASELINE)
-	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(BASELINE)
+//	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 //BENCHMARK(PROTO_C)
 //->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
