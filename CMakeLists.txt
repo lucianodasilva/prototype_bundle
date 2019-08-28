@@ -75,6 +75,10 @@ endif()
 if (build_streaming_tasks)
 	add_executable (streaming_tasks static_ring_buffer.hpp streaming_tasks.cpp)
 
+    set_target_properties(streaming_tasks
+            PROPERTIES
+            CXX_STANDARD 17)
+
 	set (GLM_QUIET ON CACHE BOOL "")
 	set (BUILD_SHARED_LIBS OFF CACHE BOOL "")
 	set (BUILD_STATIC_LIBS ON CACHE BOOL "")
