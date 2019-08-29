@@ -2,13 +2,13 @@
 #include <iostream>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 
 #include <array>
 #include <algorithm>
 #include <atomic>
-#include <execution>
 #include <vector>
 #include <future>
 #include <functional>
@@ -53,26 +53,24 @@ inline uint8_t count_tzb(std::size_t v) noexcept {
 using namespace glm;
 
 struct transformer {
-	float data [256];
+	glm::mat4 matrix;
+
+	glm::vec3 pos;
+	glm::vec3 rotation;
+	glm::vec3 scale;
 
 	inline void update_matrix () {
-		for (auto & v : data) {
-			v = v * 2;
-		}
+		benchmark::DoNotOptimize(matrix);
+		matrix = glm::mat4 {1.0f};
+
+		matrix = glm::scale (matrix, scale);
+		matrix = glm::rotate(matrix, 1.0f, rotation);
+		matrix = glm::translate (matrix, pos);
+
+		matrix = glm::inverse(matrix);
+		matrix = glm::transpose(matrix);
 	}
 };
-
-std::vector < transformer > generate_data(std::size_t count) {
-	std::vector < transformer > data(count);
-
-	for (std::size_t i = 0; i < count; ++i) {
-		for (auto & v : data[i].data) {
-			v = (float) (std::rand() % 1000);
-		}
-	}
-
-	return data;
-}
 
 std::vector < transformer > test_data( MAX_ITERATION_RANGE);
 
@@ -226,7 +224,7 @@ namespace proto_d {
 		void wait_for(task* t) {
 			auto & lane = get_this_lane();
 
-			while (t->unresolved_children.load() > 0) {
+			while (t->unresolved_children.load(std::memory_order_relaxed) != 0) {
 				run_lane(lanes, lane, 0);
 			}
 		}
@@ -285,48 +283,6 @@ namespace proto_d {
 		std::vector < std::thread >	workers;
 		unsigned const				thread_count;
 	};
-
-}
-
-void BASELINE(benchmark::State& state) {
-
-	std::vector < std::future < void > > sync(THREAD_COUNT);
-
-	auto * data = test_data.data();
-
-	for (auto _ : state) {
-
-		auto len = state.range(0);
-		auto stride = len / THREAD_COUNT;
-		auto rem = len % THREAD_COUNT;
-
-		for (unsigned i = 0; i < THREAD_COUNT; ++i) {
-			auto offset = i * stride;
-
-			if (i == THREAD_COUNT - 1)
-				stride = stride + rem;
-
-			sync[i] = std::async(std::launch::async, [=]() {
-				for (unsigned j = offset; j < offset + stride; ++j)
-					data[j].update_matrix();
-				});
-		}
-
-		for (unsigned i = 0; i < THREAD_COUNT; ++i)
-			sync[i].get();
-	}
-
-/*
-	for (auto _ : state) {
-		std::for_each (
-			std::execution::par,
-			std::begin (test_data),
-			std::begin (test_data) + state.range(0),
-			[] (transformer & v) {
-				v.update_matrix();
-			}
-		);
-	}*/
 }
 
 proto_d::executor exe_d(THREAD_COUNT);
@@ -336,8 +292,9 @@ void SEQ_BASELINE(benchmark::State & state) {
 
 		auto range = state.range(0);
 
-		for (unsigned i = 0; i < range; ++i)
-			test_data [i].update_matrix();
+		for (unsigned i = 0; i < range; ++i) {
+			test_data[i].update_matrix();
+		}
 	}
 }
 
@@ -359,21 +316,10 @@ void PROTO_D(benchmark::State& state) {
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-
-BENCHMARK(SEQ_BASELINE)
-	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-BENCHMARK(BASELINE)
-	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-//BENCHMARK(PROTO_C)
-//->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(SEQ_BASELINE)
+//	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK(PROTO_D)
 ->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-/*
-BENCHMARK(ParallelTransforms_A)
-->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-*/
 
 BENCHMARK_MAIN();
