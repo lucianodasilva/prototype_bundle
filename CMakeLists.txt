@@ -29,6 +29,7 @@ option (build_bbtree_benchmark "build bbtree_benchmark" OFF)
 option (build_streaming_tasks "build streamming_tasks" ON)
 option (build_copy_benchmark "build copy benchmark" ON)
 option (build_timing_benchmark "build timing benchmark" ON)
+option (build_thread_safe_linked_list "build thread safe linked list benchmark" ON)
 
 # disable google benchmark testing
 set (BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "")
@@ -122,4 +123,9 @@ endif()
 if (build_timing_benchmark) 
 	add_executable (timing_benchmark timing_benchmark.cpp)
 	target_link_libraries (timing_benchmark PUBLIC benchmark_main)
+endif()
+
+if (build_thread_safe_linked_list)
+    add_executable (thread_safe_linked_list thread_safe_linked_list.cpp)
+    target_link_libraries (thread_safe_linked_list PUBLIC benchmark_main)
 endif()
