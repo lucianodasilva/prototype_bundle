@@ -1,3 +1,3 @@
 # prototype_bundle
 
-Bunch of prototypes
+Bunch of prototypes and cool patterns along the years
