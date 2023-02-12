@@ -100,7 +100,7 @@ namespace baseline {
 baseline::linked_list < int > baseline_linked_list;
 
 static void bm_baseline_push (benchmark::State& state) {
-	if (state.thread_index == 0) {
+	if (state.thread_index() == 0) {
 		baseline_linked_list.clear ();
 	}
 
@@ -110,16 +110,16 @@ static void bm_baseline_push (benchmark::State& state) {
 		}
 	}
 
-	if (state.thread_index == 0) {
-		if (baseline_linked_list.size() != state.range(0) * state.threads * state.iterations())
+	if (state.thread_index() == 0) {
+		if (baseline_linked_list.size() != state.range(0) * state.threads() * state.iterations())
 			state.SkipWithError("Wrong number of items detected");
 	}
 }
 
 static void bm_baseline_pop (benchmark::State& state) {
-	if (state.thread_index == 0) {
+	if (state.thread_index() == 0) {
 		baseline_linked_list.clear ();
-		fill_list(baseline_linked_list, state.range (0) * state.threads * 200);
+		fill_list(baseline_linked_list, state.range (0) * state.threads() * 200);
 	}
 
 	for (auto _ : state) {
@@ -188,7 +188,7 @@ namespace lockless {
 lockless::linked_list < int > lockless_linked_list;
 
 static void bm_lockless_push (benchmark::State& state) {
-	if (state.thread_index == 0) {
+	if (state.thread_index() == 0) {
 		lockless_linked_list.clear ();
 	}
 
@@ -198,9 +198,9 @@ static void bm_lockless_push (benchmark::State& state) {
 		}
 	}
 
-	if (state.thread_index == 0) {
+	if (state.thread_index() == 0) {
 		// evaluate
-		if (lockless_linked_list.size() != state.range(0) * state.threads * state.iterations())
+		if (lockless_linked_list.size() != state.range(0) * state.threads() * state.iterations())
 			state.SkipWithError("Wrong number of items detected");
 	}
 }

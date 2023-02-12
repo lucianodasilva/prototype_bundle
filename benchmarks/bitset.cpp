@@ -51,7 +51,7 @@ struct int_bitset {
 
 		auto v = data[block];
 #ifdef __linux__
-		
+        return false;
 #else
 		return _bittest64(reinterpret_cast < const long long * > (data + block), bit);
 #endif

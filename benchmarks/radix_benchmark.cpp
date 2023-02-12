@@ -4,6 +4,7 @@
 #include <array>
 #include <vector>
 #include <cstring>
+#include <stdexcept>
 
 namespace proto {
 
@@ -332,16 +333,16 @@ static void BM_PrecalcShortcutRadix(benchmark::State& state) {
 	benchmark::DoNotOptimize(data);
 }
 
-//BENCHMARK(BM_Baseline)
-//->Range(8 << 14, 8 << 20)
-//->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_Baseline)
+->Range(8 << 14, 8 << 20)
+->Unit(benchmark::kMillisecond);
 
-//BENCHMARK(BM_NaiveRadix)
-//	->Range(8, 8 << 10);
+BENCHMARK(BM_NaiveRadix)
+	->Range(8, 8 << 10);
 
-//BENCHMARK(BM_ShortcutRadix)
-//->Range(8 << 14, 8 << 20)
-//->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_ShortcutRadix)
+->Range(8 << 14, 8 << 20)
+->Unit(benchmark::kMillisecond);
 
 BENCHMARK(BM_PrecalcShortcutRadix)
 ->Range(8 << 14, 8 << 20)

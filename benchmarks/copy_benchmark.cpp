@@ -1,21 +1,22 @@
 #include <benchmark/benchmark.h>
 #include <future>
+#include <cstring>
 
 #define MIN_ITERATION_RANGE 1 << 20
 #define MAX_ITERATION_RANGE 1 << 30
 
-char* buffer_a = (char *) _aligned_malloc(MAX_ITERATION_RANGE, 16);
-char * buffer_b = (char*)_aligned_malloc(MAX_ITERATION_RANGE, 16);
+std::unique_ptr < uint8_t [] > buffer_a = std::make_unique < uint8_t [] > (MAX_ITERATION_RANGE);
+std::unique_ptr < uint8_t [] > buffer_b = std::make_unique < uint8_t [] > (MAX_ITERATION_RANGE);
 
 void with_memcpy (benchmark::State& state) {
 	for (auto _ : state) {
-		memcpy(buffer_b, buffer_a, state.range(0));
+		memcpy(buffer_b.get (), buffer_a.get (), state.range(0));
 	}
 }
 
 void with_std_copy (benchmark::State& state) {
 	for (auto _ : state) {
-		std::copy(buffer_a, buffer_a + state.range(0), buffer_b);
+		std::copy(buffer_a.get (), buffer_a.get () + state.range(0), buffer_b.get ());
 	}
 }
 
@@ -37,7 +38,7 @@ void with_async_memcpy(benchmark::State& state) {
 				stride = rem;
 
 			sync[i] = std::async(std::launch::async, [=]() {
-				memcpy(buffer_b + offset, buffer_a + offset, stride);
+				memcpy(buffer_b.get () + offset, buffer_a.get () + offset, stride);
 			});
 		}
 
