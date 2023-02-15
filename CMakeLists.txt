@@ -25,7 +25,7 @@ option (build_radix_benchmark "Build radix_benchmark" ON)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" ON)
 option (build_gc_prototype_benchmark "build gc_prototype_benchmark" ON)
 option (build_bitset_benchmark "build bitset_benchmark" ON)
-option (build_streaming_tasks "build streamming_tasks" ON)
+option (build_streaming_tasks "build streaming_tasks" ON)
 option (build_copy_benchmark "build copy benchmark" ON)
 option (build_timing_benchmark "build timing benchmark" ON)
 option (build_thread_safe_linked_list "build thread safe linked list benchmark" ON)
@@ -70,7 +70,7 @@ if (build_streaming_tasks)
 
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
         target_compile_options(streaming_tasks PUBLIC
-                $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
+                 $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
     endif()
 
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")

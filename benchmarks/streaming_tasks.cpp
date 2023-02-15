@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <glm/fwd.hpp>
 #include <iostream>
 
 #include <glm/glm.hpp>
@@ -67,13 +68,13 @@ struct transformer {
 
 	glm::vec3 pos;
 	glm::vec3 rotation;
-	glm::vec3 scale;
+	float scale;
 
 	inline void update_matrix() {
-		benchmark::DoNotOptimize(matrix);
+		//benchmark::DoNotOptimize(matrix);
 		matrix = glm::mat4{1.0f};
 
-		matrix = glm::scale(matrix, scale);
+		matrix = glm::scale(matrix, glm::vec3 (scale, scale, scale));
 		matrix = glm::rotate(matrix, 1.0f, rotation);
 		matrix = glm::translate(matrix, pos);
 
@@ -302,7 +303,7 @@ namespace proto_e {
     struct alignas(64) task {
     public:
 
-        inline void call () {
+        inline void call () const {
             callback (data_begin, data_end);
             --(parent->unresolved_children);
         }
@@ -322,15 +323,15 @@ namespace proto_e {
     public:
 
         void push(task *t) noexcept {
-            auto b = back.load();//std::memory_order_acquire);
+            auto b = back.load(std::memory_order_acquire);
             tasks[b & mask] = t;
 
-            back.store(b + 1);//, std::memory_order_release);
+            back.store(b + 1, std::memory_order_release);
         }
 
         task *pop() noexcept {
             auto b = --back;
-            auto f = front.load();//std::memory_order_acquire);
+            auto f = front.load(std::memory_order_acquire);
 
             if (f <= b) {
                 task *t = tasks[b & mask];
@@ -339,27 +340,27 @@ namespace proto_e {
                     return t;
 
                 auto f_plus{f + 1};
-                if (!front.compare_exchange_strong(f, f_plus))//, std::memory_order_release, std::memory_order_acquire))
+                if (!front.compare_exchange_strong(f, f_plus, std::memory_order_release, std::memory_order_acquire))
                     t = nullptr;
 
-                back.store(f_plus);//, std::memory_order_release);
+                back.store(f_plus, std::memory_order_release);
                 return t;
             } else {
-                back.store(f);//, std::memory_order_release);
+                back.store(f, std::memory_order_release);
                 return nullptr;
             }
         }
 
         task *steal() noexcept {
-            auto f = front.load();//std::memory_order_relaxed);
-            auto b = back.load();//std::memory_order_acquire);
+            auto f = front.load(std::memory_order_relaxed);
+            auto b = back.load(std::memory_order_acquire);
 
-            //std::atomic_thread_fence(std::memory_order_acq_rel);
+            std::atomic_thread_fence(std::memory_order_acq_rel);
 
             if (f < b) {
                 auto *t = tasks[f & mask];
 
-                if (front.compare_exchange_strong(f, f + 1))//, std::memory_order_release))
+                if (front.compare_exchange_strong(f, f + 1, std::memory_order_release))
                     return t;
             }
 
@@ -470,7 +471,7 @@ namespace proto_e {
         void wait_for(task *t) {
             auto &lane = get_this_lane();
 
-            while (t->unresolved_children.load() /*std::memory_order_relaxed)*/ != 0) {
+            while (t->unresolved_children.load(std::memory_order_relaxed) != 0) {
                 run_lane(lanes, lane, 0);
             }
         }
@@ -480,7 +481,42 @@ namespace proto_e {
             auto &lane = get_this_lane();
 
             //unsigned job_div = std::sqrt(length);
-            unsigned job_div = THREAD_COUNT;
+            unsigned job_div = this->physical_cores.size ();
+
+            task *parent = lane.alloc();
+            parent->unresolved_children = job_div;
+
+            auto stride = length / job_div;
+            auto rem = length % job_div;
+
+            for (unsigned i = 0; i < job_div; ++i) {
+                auto offset = i * stride;
+
+                if (i == job_div - 1)
+                    stride = stride + rem;
+
+                task *t = lane.alloc();
+
+                t->callback = callback;
+                t->data_begin = data + offset;
+                t->data_end = data + offset + stride;
+
+                t->parent = parent;
+
+                lane.push(t);
+            }
+
+            wait_for(parent);
+
+            for (auto &f_lane : lanes)
+                f_lane.alloc_free();
+        }
+
+        template<typename _data_t>
+        inline void run_parallel_many(task_callback callback, _data_t * data, std::size_t length) {
+            auto &lane = get_this_lane();
+
+            unsigned job_div = std::sqrt(length / physical_cores.size ());
 
             task *parent = lane.alloc();
             parent->unresolved_children = job_div;
@@ -564,7 +600,7 @@ inline void PROTO_E (benchmark::State & state) {
 
         auto range = state.range(0);
 
-        exec_e.run_parallel([](void * data_begin, void * data_end) {
+        exec_e.run_parallel_many([](void * data_begin, void * data_end) {
             auto * ptr = reinterpret_cast < transformer * > (data_begin);
             auto * end = reinterpret_cast < transformer * > (data_end);
 
@@ -579,9 +615,9 @@ inline void PROTO_E (benchmark::State & state) {
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
-// BENCHMARK(SEQ_BASELINE)
-// 	->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-//
+BENCHMARK(SEQ_BASELINE)
+    ->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+
 // BENCHMARK(PROTO_D)
 //     ->RANGE
 //     ->Unit(benchmark::TimeUnit::kMillisecond);
