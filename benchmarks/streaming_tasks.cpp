@@ -20,16 +20,15 @@
 
 #define THREAD_COUNT 4
 
-std::vector < uint > get_physical_cores ();
-
 #if defined (__linux)
+#include <pthread.h>
 
-std::vector < uint > get_physical_cores () {
-    std::vector < uint > physical_cores;
+std::vector < std::size_t > get_physical_cores () {
+    std::vector < std::size_t > physical_cores;
 
     auto core_count = std::thread::hardware_concurrency();
 
-    for (uint i = 0; i < core_count; ++i) {
+    for (std::size_t i = 0; i < core_count; ++i) {
         auto path = std::filesystem::path ("/sys/devices/system/cpu/cpu"+ std::to_string (i) + "/topology/thread_siblings_list");
 
         if (std::filesystem::exists(path)) {
@@ -57,8 +56,86 @@ std::vector < uint > get_physical_cores () {
     return physical_cores;
 }
 
-#elif defined (_WIN32)
+void set_thread_affinity(std::size_t core_id) {
+    // set cpu affinity
+    auto native_thread = pthread_self();
 
+    cpu_set_t cpu_set;
+
+    CPU_ZERO(&cpu_set);
+    CPU_SET(core_id, &cpu_set);
+
+    auto ret = pthread_setaffinity_np(native_thread, sizeof(cpu_set_t), &cpu_set);
+
+    if (ret != 0) {
+        std::cerr << "cpu core affinity failed" << std::endl;
+    }
+}
+
+#elif defined (_WIN32)
+#include <Windows.h>
+
+std::vector < std::size_t > get_physical_cores() {
+    std::vector < std::size_t > cores;
+
+    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer = nullptr;
+    DWORD length_in_bytes = 0;
+
+    // get size of buffer;
+    if (FAILED(GetLogicalProcessorInformation(
+        nullptr,
+        &length_in_bytes)))
+    {
+        std::cerr << "get cpu physical cores failed" << std::endl;
+        return {};
+    }
+
+    buffer = reinterpret_cast <PSYSTEM_LOGICAL_PROCESSOR_INFORMATION> (malloc(length_in_bytes));
+
+    if (!buffer) {
+        std::cerr << "get cpu physical cores allocation failed" << std::endl;
+        return {};
+    }
+
+    if (FAILED(GetLogicalProcessorInformation(
+        buffer,
+        &length_in_bytes)))
+    {
+        std::cerr << "get cpu physical cores failed" << std::endl;
+        return {};
+    }
+
+    auto* it = buffer;
+    auto* end = it + length_in_bytes / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+
+    while (it < end) {
+        if (it->Relationship == RelationProcessorCore) {
+            unsigned long id;
+
+            if (BitScanForward64(&id, it->ProcessorMask)) {
+                cores.push_back(id);
+            }
+        }
+
+        ++it;
+    }
+
+    free(buffer);
+
+    return cores;
+
+}
+
+void set_thread_affinity(std::size_t core_id) {
+    // works only up to 64 processors
+    auto handle = GetCurrentThread();
+    auto mask = (1 << core_id);
+
+    if (!SetThreadAffinityMask(handle, mask)) {
+        std::cerr << "set cpu core affinity failed" << std::endl;
+    }
+}
+    
 #endif
 
 using namespace glm;
@@ -443,21 +520,10 @@ namespace proto_e {
             // init workers
             for (unsigned i = 1; i < physical_cores.size (); ++i) {
                 workers[i] = std::thread([this, i, core=physical_cores[i]]() {
-                    auto &lane = lanes[i];
-
                     // set cpu affinity
-                    auto native_thread = pthread_self();
+                    set_thread_affinity(core);
 
-                    cpu_set_t cpu_set;
-
-                    CPU_ZERO(&cpu_set);
-                    CPU_SET(core, &cpu_set);
-
-                    auto ret = pthread_setaffinity_np(native_thread, sizeof(cpu_set_t), &cpu_set);
-
-                    if (ret != 0) {
-                        std::cerr << "cpu core affinity failed" << std::endl;
-                    }
+                    auto &lane = lanes[i];
 
                     // run
                     lane.running = true;
@@ -558,7 +624,7 @@ namespace proto_e {
             return lanes[0];
         }
 
-        std::vector<uint> physical_cores;
+        std::vector<std::size_t> physical_cores;
         std::vector<lane> lanes;
         std::vector<std::thread> workers;
     };
