@@ -4,8 +4,8 @@
 #include <mutex>
 #include <memory>
 
-#define MIN_ITERATION_RANGE (1U << 14U)
-#define MAX_ITERATION_RANGE (1U << 22U)
+#define MIN_ITERATION_RANGE (1U << 8U)
+#define MAX_ITERATION_RANGE (1U << 16U)
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 
@@ -64,22 +64,23 @@ namespace baseline {
     	}
 
         inline void push_front (_t && item) noexcept {
-            auto lock = std::unique_lock(_head_mutex);
+			auto * new_node = new node { item, nullptr };
 
-			auto * new_node = new node { item, _head };
-			_head = new_node;
+            {
+                auto lock = std::unique_lock(_head_mutex);
+                new_node->next = _head;
+                _head = new_node;
+            }
         }
 
-        inline _t pop_front () {
+        inline void pop_front () {
 			auto lock = std::unique_lock(_head_mutex);
 
 			if (!_head)
-				throw std::runtime_error ("FAAAAIL");
+				return;
 
 			std::unique_ptr < node > n { _head };
 			_head = _head->next;
-
-			return n->data;
     	}
 
     private:
@@ -165,9 +166,9 @@ namespace lockless {
 
 			while (!_head.compare_exchange_weak(
 				new_node->next,
-				new_node,
-				std::memory_order_release,
-				std::memory_order_relaxed));
+				new_node));
+				//std::memory_order_release,
+				//std::memory_order_relaxed));
 		}
 
 	private:
@@ -205,21 +206,22 @@ static void bm_lockless_push (benchmark::State& state) {
 	}
 }
 
-/*
 BENCHMARK(bm_baseline_push)
 	->RANGE
 	->Unit(benchmark::TimeUnit::kMillisecond)
 	->Threads(4);
- */
 
-BENCHMARK(bm_baseline_pop)
-	->RANGE
-	->Unit(benchmark::TimeUnit::kMillisecond)
-	;//->Threads(4);
-
-/*
 BENCHMARK(bm_lockless_push)
 	->RANGE
 	->Unit(benchmark::TimeUnit::kMillisecond)
 	->Threads(4);
- */
+
+BENCHMARK(bm_baseline_push)
+        ->RANGE
+        ->Unit(benchmark::TimeUnit::kMillisecond)
+        ->Threads(4);
+
+BENCHMARK(bm_lockless_push)
+        ->RANGE
+        ->Unit(benchmark::TimeUnit::kMillisecond)
+        ->Threads(4);

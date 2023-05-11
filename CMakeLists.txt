@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.9)
 project(prototype_bundle)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
 option (build_make_it "Build make_it" ON)
 
@@ -29,6 +30,8 @@ option (build_streaming_tasks "build streaming_tasks" ON)
 option (build_copy_benchmark "build copy benchmark" ON)
 option (build_timing_benchmark "build timing benchmark" ON)
 option (build_thread_safe_linked_list "build thread safe linked list benchmark" ON)
+option (build_thread_local_vs_others "build thread local vs others benchmark" ON)
+option (build_streaming_math "build streaming math benchmark" ON)
 
 find_package(benchmark CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
@@ -107,4 +110,14 @@ endif()
 if (build_thread_safe_linked_list)
     add_executable (thread_safe_linked_list benchmarks/thread_safe_linked_list.cpp)
     target_link_libraries (thread_safe_linked_list PUBLIC benchmark::benchmark benchmark::benchmark_main)
+endif()
+
+if (build_thread_local_vs_others)
+    add_executable (thread_local_vs_others benchmarks/thread_local_vs_others.cpp)
+    target_link_libraries (thread_local_vs_others PUBLIC benchmark::benchmark benchmark::benchmark_main)
+endif()
+
+if (build_streaming_math)
+    add_executable (streaming_math benchmarks/streaming-math.cpp)
+    target_link_libraries (streaming_math PUBLIC benchmark::benchmark benchmark::benchmark_main)
 endif()
