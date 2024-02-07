@@ -30,40 +30,92 @@ namespace gc {
 	};
 
 	template < typename t >
-	void list_push_front (std::atomic < t* > & head, t * node) {
+	void list_push_front (std::atomic < t* > & head, t * node, t * t::*next_field_addr = &t::next) {
 		// lockfree push front
-		node->next = head.load();
+		node->*next_field_addr = head.load();
 
 		while (head.compare_exchange_weak(
-			node->next,
+			node->*next_field_addr,
 			node,
 			std::memory_order_release,
 			std::memory_order_relaxed) == false)
 		{ /* spin */ }
 	}
 
+	template < typename t >
+	t * list_pop_front (std::atomic < t* > & head, t * t::*next_field_addr = &t::next) {
+		// lockfree pop front
+		auto * old_head = head.load();
+
+		while (old_head != nullptr && head.compare_exchange_weak(
+			old_head,
+			old_head->*next_field_addr,
+			std::memory_order_release,
+			std::memory_order_relaxed) == false)
+		{ /* spin */ }
+
+		if (old_head != nullptr) {
+			old_head->*next_field_addr = nullptr;
+		}
+
+		return old_head;
+	}
+
+	template < typename t >
+	void list_push_front (t * & head, t * node, t * t::*next_field_addr = &t::next) {
+		node->*next_field_addr = head;
+		head = node;
+	}
+
+	template < typename t >
+	t * list_pop_front (t * & head, t * t::*next_field_addr = &t::next) {
+		if (head != nullptr) {
+			auto * old_head = head;
+			head = head->*next_field_addr;
+
+			old_head->*next_field_addr = nullptr;
+			return old_head;
+		}
+
+		return nullptr;
+	}
+
+	template < typename t >
+	t * list_detach (std::atomic < t * > & head) {
+		auto * detached_head = head.load();
+
+		while (head.compare_exchange_weak(
+			detached_head,
+			nullptr,
+			std::memory_order_release,
+			std::memory_order_relaxed) == false)
+		{ /* spin */ }
+
+		return detached_head;
+	}
+
 	template < typename t, typename release_f >
 	void list_collect (std::atomic < t * > & head, release_f && release, bool check_state = true) {
-		// side load the list
-		auto * gc_head = head.load();
-		while (head.compare_exchange_weak(gc_head, nullptr) == false) { /* spin */ }
+
+		// detach the list
+		auto * detached_head = list_detach (head);
 
 		// traverse the list
-		while (gc_head != nullptr) {
-			auto * next_ptr = gc_head->next;
+		while (detached_head != nullptr) {
+			auto * next_ptr = detached_head->next;
 
-			if (check_state == false || gc_head->state == tracking_state::unreachable) {
+			if (check_state == false || detached_head->state == tracking_state::unreachable) {
 				// remove the object
-				release (gc_head);
-			} else if (gc_head->state == tracking_state::active){
+				release (detached_head);
+			} else if (detached_head->state == tracking_state::active){
 				// push the object back to the list
-				list_push_front (head, gc_head);
+				list_push_front (head, detached_head);
 			} else {
 				// something really bad happened
 				throw std::runtime_error ("object marked for collection is still reachable");
 			}
 
-			gc_head = next_ptr;
+			detached_head = next_ptr;
 		}
 	}
 
@@ -188,19 +240,14 @@ namespace gc {
 						if (obj->state == tracking_state::unreachable) {
 							obj->state.store(tracking_state::marked, std::memory_order_release);
 
-							// push the object onto the mark list
-							obj->next_marked = next_mark_list;
-							next_mark_list = obj;
+							// push to marked objects
+							list_push_front (next_mark_list, obj, &object::next_marked);
 						}
 					}
 
 					// maintain integrity of the list by popping the head
-					auto* next_ptr = mark_list->next_marked;
-
 					mark_list->state.store (tracking_state::active, std::memory_order_release);
-					mark_list->next_marked = nullptr;
-
-					mark_list = next_ptr;
+					list_pop_front (mark_list, &object::next_marked);
 				}
 			}
 		}
