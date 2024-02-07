@@ -359,6 +359,7 @@ struct demo {
 };
 
 void gc_alloc_assign(benchmark::State &state) {
+	gc::tracker::instance().register_collector_thread();
 
 	auto root = gc::make_gc<demo>();
 	auto node = root;
@@ -375,9 +376,10 @@ void gc_alloc_assign(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(gc_alloc_assign)->Range(1 << 8, 1 << 18);
+BENCHMARK(gc_alloc_assign)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 void gc_collect(benchmark::State &state) {
+	gc::tracker::instance().register_collector_thread();
 
 	auto root = gc::make_gc<demo>();
 	auto node = root;
@@ -395,7 +397,7 @@ void gc_collect(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(gc_collect)->Range(1 << 8, 1 << 18);
+BENCHMARK(gc_collect)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 struct no_gc_demo {
 	uint8_t xxx[object_size];
@@ -425,7 +427,7 @@ void no_gc_baseline_alloc(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(no_gc_baseline_alloc)->Range(1 << 8, 1 << 18);
+BENCHMARK(no_gc_baseline_alloc)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 void no_gc_baseline_collect(benchmark::State &state) {
 
@@ -448,7 +450,7 @@ void no_gc_baseline_collect(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(no_gc_baseline_collect)->Range(1 << 8, 1 << 18);
+BENCHMARK(no_gc_baseline_collect)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 void shared_ptr_alloc_baseline(benchmark::State &state) {
 
@@ -473,7 +475,7 @@ void shared_ptr_alloc_baseline(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(shared_ptr_alloc_baseline)->Range(1 << 8, 1 << 18);
+BENCHMARK(shared_ptr_alloc_baseline)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 void shared_ptr_collect_baseline(benchmark::State &state) {
 
@@ -498,4 +500,4 @@ void shared_ptr_collect_baseline(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(shared_ptr_collect_baseline)->Range(1 << 8, 1 << 18);
+BENCHMARK(shared_ptr_collect_baseline)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
