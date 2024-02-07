@@ -51,6 +51,6 @@ void with_async_memcpy(benchmark::State& state) {
 
 BENCHMARK(with_memcpy)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 BENCHMARK(with_std_copy)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-BENCHMARK(with_async_memcpy)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+//BENCHMARK(with_async_memcpy)->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
 BENCHMARK_MAIN();

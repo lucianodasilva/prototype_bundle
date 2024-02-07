@@ -338,7 +338,8 @@ BENCHMARK(BM_Baseline)
 ->Unit(benchmark::kMillisecond);
 
 BENCHMARK(BM_NaiveRadix)
-	->Range(8, 8 << 10);
+->Range(8 << 14, 8 << 20)
+->Unit(benchmark::kMillisecond);
 
 BENCHMARK(BM_ShortcutRadix)
 ->Range(8 << 14, 8 << 20)

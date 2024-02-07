@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.9)
 project(prototype_bundle)
 
 set(CMAKE_CXX_STANDARD 17)
+# Test LTO
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
 option (build_make_it "Build make_it" ON)
@@ -32,6 +33,7 @@ option (build_timing_benchmark "build timing benchmark" ON)
 option (build_thread_safe_linked_list "build thread safe linked list benchmark" ON)
 option (build_thread_local_vs_others "build thread local vs others benchmark" ON)
 option (build_streaming_math "build streaming math benchmark" ON)
+option (build_tracing_ptr "build tracing ptr benchmark" ON)
 
 find_package(benchmark CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
@@ -120,4 +122,9 @@ endif()
 if (build_streaming_math)
     add_executable (streaming_math benchmarks/streaming-math.cpp)
     target_link_libraries (streaming_math PUBLIC benchmark::benchmark benchmark::benchmark_main)
+endif()
+
+if (build_tracing_ptr)
+    add_executable (tracing_ptr benchmarks/tracing_ptr.cpp)
+    target_link_libraries (tracing_ptr PUBLIC benchmark::benchmark benchmark::benchmark_main)
 endif()
