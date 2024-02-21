@@ -1,6 +1,21 @@
 cmake_minimum_required(VERSION 3.9)
 project(prototype_bundle)
 
+macro (append_source path out)
+    file (
+            GLOB_RECURSE
+            sources
+            ${path}/*.h
+            ${path}/*.hpp
+            ${path}/*.c
+            ${path}/*.cpp
+            ${path}/*.s
+    )
+
+    list (APPEND ${out} ${sources})
+endmacro()
+
+
 set(CMAKE_CXX_STANDARD 17)
 # Test LTO
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
@@ -23,6 +38,7 @@ if (build_console_input)
     add_executable(console_input console_input.cpp)
 endif()
 
+option (build_parallel_testbench "Build parallel_testbench" ON)
 option (build_radix_benchmark "Build radix_benchmark" ON)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" ON)
 option (build_gc_prototype_benchmark "build gc_prototype_benchmark" ON)
@@ -38,32 +54,34 @@ option (build_tracing_ptr "build tracing ptr benchmark" ON)
 find_package(benchmark CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 
-if (build_radix_benchmark)
+if (build_parallel_testbench)
+    append_source(parallel_testbench/src parallel_testbench_source)
+    append_source(parallel_testbench/include parallel_testbench_include)
 
+    add_library(parallel_testbench STATIC ${parallel_testbench_source} ${parallel_testbench_include})
+    target_include_directories(parallel_testbench PUBLIC parallel_testbench/include)
+
+    target_link_libraries(parallel_testbench PUBLIC)
+endif()
+
+if (build_radix_benchmark)
     add_executable(radix_benchmark benchmarks/radix_benchmark.cpp)
     target_link_libraries(radix_benchmark benchmark::benchmark benchmark::benchmark_main)
-
 endif()
 
 if (build_row_or_column_benchmark )
-
     add_executable(row_or_column_benchmark benchmarks/row_or_column_benchmark.cpp)
     target_link_libraries(row_or_column_benchmark benchmark::benchmark benchmark::benchmark_main)
-
 endif()
 
 if (build_gc_prototype_benchmark)
-
     add_executable(gc_prototype_benchmark benchmarks/gc_prototype.cpp)
     target_link_libraries(gc_prototype_benchmark benchmark::benchmark benchmark::benchmark_main)
-
 endif()
 
 if (build_bitset_benchmark)
-
     add_executable(bitset benchmarks/bitset.cpp)
     target_link_libraries(bitset benchmark::benchmark benchmark::benchmark_main)
-
 endif()
 
 if (build_streaming_tasks)
@@ -79,16 +97,10 @@ if (build_streaming_tasks)
     endif()
 
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+        message ("Enabling thread sanitizer for Release build")
+
         target_compile_options(streaming_tasks PUBLIC
                 $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
-
-        target_link_libraries(streaming_tasks PUBLIC tbb)
-
-        #target_compile_options(streaming_tasks PUBLIC
-        #        -fsanitize=thread)
-
-        #target_link_options(streaming_tasks PUBLIC
-        #        -fsanitize=thread)
     endif()
 
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
