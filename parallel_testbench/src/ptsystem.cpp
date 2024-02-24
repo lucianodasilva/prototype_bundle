@@ -6,8 +6,6 @@
 #include <string>
 #include <thread>
 
-#include "ptconfig.h"
-
 namespace ptbench {
 
 #if defined (PT_OS_GNU_LINUX)

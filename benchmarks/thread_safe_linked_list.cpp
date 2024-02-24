@@ -1,227 +1,277 @@
 #include <benchmark/benchmark.h>
-#include <iostream>
+#include <ptbench.h>
 #include <atomic>
 #include <mutex>
 #include <memory>
-
-#define MIN_ITERATION_RANGE (1U << 8U)
-#define MAX_ITERATION_RANGE (1U << 16U)
-
-#define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
+#include <xmmintrin.h>
+#include <stack>
+#include <list>
 
 struct spin_mutex {
-public:
-    inline void lock() {
-        while (_lockless_flag.test_and_set(std::memory_order_acquire)) {}
-    }
 
-    inline void unlock() {
-        _lockless_flag.clear(std::memory_order_release);
-    }
+	void lock() noexcept {
+		for (;;) {
+			// Optimistically assume the lock is free on the first try
+			if (!_lock.exchange(true, std::memory_order_acquire)) {
+				return;
+			}
+			// Wait for lock to be released without generating cache misses
+			while (_lock.load(std::memory_order_relaxed)) {
+				// Issue X86 PAUSE or ARM YIELD instruction to reduce contention between
+				// hyper-threads
+
+				_mm_pause();
+			}
+		}
+	}
+
+	bool try_lock() noexcept {
+		// First do a relaxed load to check if lock is free in order to prevent
+		// unnecessary cache misses if someone does while(!try_lock())
+		return !_lock.load(std::memory_order_relaxed) &&
+			   !_lock.exchange(true, std::memory_order_acquire);
+	}
+
+	void unlock() noexcept {
+		_lock.store(false, std::memory_order_release);
+	}
 
 private:
-    std::atomic_flag _lockless_flag { ATOMIC_FLAG_INIT };
+	std::atomic_bool _lock { false };
 };
 
-using spin_guard = std::lock_guard<spin_mutex>;
+namespace demo_a {
 
-template < typename _t, template < typename > typename _list_t >
-inline void fill_list (_list_t < _t > & list, std::size_t count) {
-	for (std::size_t i = 0; i < count; ++i) {
-		list.push_front (i);
-	}
-}
-
-namespace baseline {
-
-    template < typename _t >
-    struct linked_list {
-    public:
-
-    	inline void clear () {
-			// release all nodes
-			while (_head) {
-				auto * prev = _head;
-				_head = _head->next;
-				delete prev;
-			}
-    	}
-
-    	inline std::size_t size() const noexcept {
-    		auto * cursor = _head;
-    		std::size_t count {0};
-
-    		while (cursor) {
-    			cursor = cursor->next;
-    			++count;
-    		}
-
-    		return count;
-    	}
-
-    	~linked_list() {
-    		clear ();
-    	}
-
-        inline void push_front (_t && item) noexcept {
-			auto * new_node = new node { item, nullptr };
-
-            {
-                auto lock = std::unique_lock(_head_mutex);
-                new_node->next = _head;
-                _head = new_node;
-            }
-        }
-
-        inline void pop_front () {
-			auto lock = std::unique_lock(_head_mutex);
-
-			if (!_head)
-				return;
-
-			std::unique_ptr < node > n { _head };
-			_head = _head->next;
-    	}
-
-    private:
-
-        struct node {
-        public:
-    		_t 		data;
-            node *  next { nullptr };
-        };
-
-        node *      _head { nullptr };
-        spin_mutex  _head_mutex;
-
-    };
-
-}
-
-baseline::linked_list < int > baseline_linked_list;
-
-static void bm_baseline_push (benchmark::State& state) {
-	if (state.thread_index() == 0) {
-		baseline_linked_list.clear ();
-	}
-
-	for (auto _ : state) {
-		for (std::size_t i = 0; i < state.range(0); ++i) {
-			baseline_linked_list.push_front (i);
-		}
-	}
-
-	if (state.thread_index() == 0) {
-		if (baseline_linked_list.size() != state.range(0) * state.threads() * state.iterations())
-			state.SkipWithError("Wrong number of items detected");
-	}
-}
-
-static void bm_baseline_pop (benchmark::State& state) {
-	if (state.thread_index() == 0) {
-		baseline_linked_list.clear ();
-		fill_list(baseline_linked_list, state.range (0) * state.threads() * 200);
-	}
-
-	for (auto _ : state) {
-		for (std::size_t i = 0; i < state.range(0); ++i) {
-			baseline_linked_list.pop_front();
-		}
-	}
-}
-
-namespace lockless {
-
-	template < typename _t >
-	struct linked_list {
+	template < typename t >
+	struct stack {
 	public:
 
-		inline void clear () {
-			// release all nodes
-			while (_head) {
-				auto * prev = _head.load();
-				_head = _head.load ()->next;
-				delete prev;
+		using value_type = t;
+
+		stack() = default;
+
+		~stack () {
+			while(!empty()) {
+				pop_back();
 			}
 		}
 
-		inline std::size_t size() const noexcept {
-			auto * cursor = _head.load();
-			std::size_t count {0};
+		[[nodiscard]] bool empty() const {
+			return _head.load () == nullptr;
+		}
 
-			while (cursor) {
-				cursor = cursor->next;
-				++count;
+		void push_back (value_type const & value) {
+			auto * new_node = new node {
+				_head.load(),
+				value };
+
+			push (_head, new_node);
+		}
+
+		value_type pop_back () {
+			++_poppers;
+
+			auto * old_head = _head.load ();
+
+			while(old_head && !_head.compare_exchange_weak (old_head, old_head->next)) {}
+
+			value_type value = {};
+
+			if (old_head) {
+				value = old_head->value;
+				push(_to_be_deleted, old_head);
 			}
 
-			return count;
-		}
+			try_collect ();
 
-		~linked_list() {
-			clear ();
-		}
-
-		inline void push_front (_t && item) noexcept {
-			auto * new_node = new node { item, _head.load (std::memory_order_relaxed) };
-
-			while (!_head.compare_exchange_weak(
-				new_node->next,
-				new_node));
-				//std::memory_order_release,
-				//std::memory_order_relaxed));
+			return value;
 		}
 
 	private:
 
 		struct node {
 		public:
-			_t 		data;
-			node *  next { nullptr };
+			node * next;
+			value_type value;
 		};
 
-		std::atomic < node * >
-					_head { nullptr };
+		std::atomic < node * >	_head { nullptr };
+		std::atomic_int 		_poppers { 0 };
+		std::atomic < node * >	_to_be_deleted { nullptr };
 
+		static void push (std::atomic < node * > & head, node * new_node) {
+			for (;;) {
+				new_node->next = head.load ();
+
+				if (head.compare_exchange_weak (
+					new_node->next,
+					new_node))
+					//std::memory_order_release,
+					//std::memory_order_relaxed))
+				{
+					return;
+				}
+
+				_mm_pause();
+			}
+		}
+
+		void try_collect () {
+			if (_poppers.load (std::memory_order_relaxed) == 1) {
+				auto * to_be_deleted = _to_be_deleted.exchange (nullptr);//, std::memory_order_acquire);
+
+				while(to_be_deleted) {
+					auto * next = to_be_deleted->next;
+					delete to_be_deleted;
+					to_be_deleted = next;
+				}
+			}
+
+			--_poppers;
+		}
 	};
 
 }
 
-lockless::linked_list < int > lockless_linked_list;
+namespace demo_b {
 
-static void bm_lockless_push (benchmark::State& state) {
-	if (state.thread_index() == 0) {
-		lockless_linked_list.clear ();
-	}
+	template < typename t >
+	struct stack {
+	public:
 
-	for (auto _ : state) {
-		for (std::size_t i = 0; i < state.range(0); ++i) {
-			lockless_linked_list.push_front (i);
+		using value_type = t;
+
+		stack() = default;
+
+		~stack () {
+			while(!empty()) {
+				pop_back();
+			}
 		}
-	}
 
-	if (state.thread_index() == 0) {
-		// evaluate
-		if (lockless_linked_list.size() != state.range(0) * state.threads() * state.iterations())
-			state.SkipWithError("Wrong number of items detected");
+		[[nodiscard]] bool empty() const {
+			std::lock_guard const LOCK { _mutex };
+			return _head == nullptr;
+		}
+
+		void push_back (value_type const & value) {
+			auto * new_node = new node {
+				nullptr,
+				value };
+
+			{ std::lock_guard const LOCK { _mutex };
+				new_node->next = _head;
+				_head = new_node;
+			}
+		}
+
+		value_type pop_back () {
+			node * old_head;
+
+			{ std::lock_guard const LOCK { _mutex };
+				old_head = _head;
+
+				if (!old_head) {
+					return {};
+				}
+
+				_head = old_head->next;
+			}
+
+			auto value = old_head->value;
+			delete old_head;
+
+			return value;
+		}
+
+	private:
+
+		struct node {
+		public:
+			node * next;
+			value_type value;
+		};
+
+		node *				_head { nullptr };
+		mutable spin_mutex	_mutex;
+	};
+
+}
+
+template < typename list_t >
+void run_push (list_t & list) {
+	list.push_back (ptbench::uniform(1000));
+}
+
+template < typename list_t >
+void run_pop (list_t & list) {
+	if (!list.empty()) {
+		list.pop_back();
 	}
 }
 
-BENCHMARK(bm_baseline_push)
-	->RANGE
-	->Unit(benchmark::TimeUnit::kMillisecond)
-	->Threads(4);
+template < typename list_t, typename mutex_t >
+void run_push_mutex (list_t & list, mutex_t & mtx) {
+	std::unique_lock const LOCK { mtx };
+	run_push (list);
+}
 
-BENCHMARK(bm_lockless_push)
-	->RANGE
-	->Unit(benchmark::TimeUnit::kMillisecond)
-	->Threads(4);
+template < typename list_t, typename mutex_t >
+void run_pop_mutex (list_t & list, mutex_t & mtx) {
+	std::unique_lock const LOCK { mtx };
+	run_pop(list);
+}
 
-BENCHMARK(bm_baseline_push)
-        ->RANGE
-        ->Unit(benchmark::TimeUnit::kMillisecond)
-        ->Threads(4);
+template < typename list_t, typename mutex_t, ptbench::exec_policy policy >
+void run_benchmark_mutex (benchmark::State & state) {
+	list_t list;
+	mutex_t mtx;
 
-BENCHMARK(bm_lockless_push)
-        ->RANGE
-        ->Unit(benchmark::TimeUnit::kMillisecond)
-        ->Threads(4);
+	for (auto _ : state) {
+		// clear list
+		while(!list.empty ()) {
+			list.pop_back();
+		}
+
+		ptbench::exec ({
+			{ [&]{ run_push_mutex (list, mtx); }, 50 },
+			{ [&]{ run_pop_mutex (list, mtx); }, 50 }
+		},
+		state.range(0), policy);
+	}
+}
+
+template < typename list_t, ptbench::exec_policy policy >
+void run_benchmark (benchmark::State & state) {
+	list_t list;
+
+	for (auto _ : state) {
+		// clear list
+		while(!list.empty ()) {
+			list.pop_back();
+		}
+
+		ptbench::exec ({
+			{ [&]{ run_push (list); }, 50 },
+			{ [&]{ run_pop (list); }, 50 }
+		},
+		state.range(0), policy);
+	}
+}
+
+#define MIN_ITERATION_RANGE 1 << 14U
+#define MAX_ITERATION_RANGE 1 << 16U
+
+#define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
+
+BENCHMARK (run_benchmark_mutex < std::list < int >, std::mutex, ptbench::exec_policy::per_physical_core_affinity >)
+	->Name ("mutex - std::list")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+
+BENCHMARK (run_benchmark_mutex < std::list < int >, spin_mutex, ptbench::exec_policy::per_physical_core_affinity >)
+	->Name ("spin - std::list")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+
+BENCHMARK (run_benchmark < demo_a::stack < int >, ptbench::exec_policy::per_physical_core_affinity>)
+	->Name ("lockfree queue")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+
+BENCHMARK (run_benchmark < demo_b::stack < int >, ptbench::exec_policy::per_physical_core_affinity>)
+	->Name ("embeded spin queue")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);

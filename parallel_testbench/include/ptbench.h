@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <cinttypes>
+#include <thread>
 
 namespace ptbench {
 
@@ -15,15 +16,19 @@ namespace ptbench {
     };
 
     enum struct exec_policy {
-        per_virtual_core_default,
-        per_virtual_core_with_affinity,
-        per_physical_core_affinity
+        default_threading,          ///< no affinity set, create threads as set by the thread_count parameter
+        affinity_threading,         ///< one thread as set by the thread_count parameter with affinity automatically set
+        per_virtual_core_affinity,  ///< one thread per virtual core with affinity set per thread to a virtual core
+        per_physical_core_affinity, ///< one thread per physical core with affinity set per thread to a physical core
     };
 
     uint_fast32_t uniform(uint_fast32_t dist);
 
-    void exec (std::vector < action > const & actions, std::size_t iterations = 1000000, exec_policy policy = exec_policy::per_virtual_core_default);
-
+    void exec (
+        std::vector < action > const & actions,
+        std::size_t iterations = 1000000,
+        exec_policy policy = exec_policy::default_threading,
+        std::size_t thread_count = std::thread::hardware_concurrency());
 } // namespace ptbench
 
 #endif //PTBENCH_H

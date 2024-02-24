@@ -684,9 +684,9 @@ inline void PROTO_E (benchmark::State & state) {
 BENCHMARK(SEQ_BASELINE)
     ->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
 
-// BENCHMARK(PROTO_D)
-//     ->RANGE
-//     ->Unit(benchmark::TimeUnit::kMillisecond);
+BENCHMARK(PROTO_D)
+    ->RANGE
+    ->Unit(benchmark::TimeUnit::kMillisecond);
 
  BENCHMARK(PROTO_E)
          ->RANGE

@@ -39,8 +39,10 @@ if (build_console_input)
 endif()
 
 option (build_parallel_testbench "Build parallel_testbench" ON)
+
 option (build_radix_benchmark "Build radix_benchmark" ON)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" ON)
+option (build_spinlock_benchmark "Build spinlock_benchmark" ON)
 option (build_gc_prototype_benchmark "build gc_prototype_benchmark" ON)
 option (build_bitset_benchmark "build bitset_benchmark" ON)
 option (build_streaming_tasks "build streaming_tasks" ON)
@@ -61,7 +63,7 @@ if (build_parallel_testbench)
     add_library(parallel_testbench STATIC ${parallel_testbench_source} ${parallel_testbench_include})
     target_include_directories(parallel_testbench PUBLIC parallel_testbench/include)
 
-    target_link_libraries(parallel_testbench PUBLIC)
+    # target_link_libraries(parallel_testbench PUBLIC)
 endif()
 
 if (build_radix_benchmark)
@@ -72,6 +74,14 @@ endif()
 if (build_row_or_column_benchmark )
     add_executable(row_or_column_benchmark benchmarks/row_or_column_benchmark.cpp)
     target_link_libraries(row_or_column_benchmark benchmark::benchmark benchmark::benchmark_main)
+endif()
+
+if (build_spinlock_benchmark)
+    add_executable(spinlock_benchmark benchmarks/spinlock_benchmark.cpp)
+    target_link_libraries(spinlock_benchmark PUBLIC
+            benchmark::benchmark
+            benchmark::benchmark_main
+            parallel_testbench)
 endif()
 
 if (build_gc_prototype_benchmark)
@@ -123,7 +133,7 @@ endif()
 
 if (build_thread_safe_linked_list)
     add_executable (thread_safe_linked_list benchmarks/thread_safe_linked_list.cpp)
-    target_link_libraries (thread_safe_linked_list PUBLIC benchmark::benchmark benchmark::benchmark_main)
+    target_link_libraries (thread_safe_linked_list PUBLIC benchmark::benchmark benchmark::benchmark_main parallel_testbench)
 endif()
 
 if (build_thread_local_vs_others)
