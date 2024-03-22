@@ -115,6 +115,8 @@ void run_browse (std::vector < uint_fast32_t > & data, mutex_t & mtx) {
     }
 }
 
+ptbench::executor exec {};
+
 template < typename mutex_t >
 void run_benchmark (benchmark::State& state) {
     std::vector < uint_fast32_t > data;
@@ -123,7 +125,7 @@ void run_benchmark (benchmark::State& state) {
     while (state.KeepRunning()) {
         data.clear ();
 
-        ptbench::exec (
+        exec.dispatch (
             {
                 { [&]{ run_push (data, mtx); }, 25 },
                 { [&]{ run_pop (data, mtx); }, 25 },
@@ -133,8 +135,8 @@ void run_benchmark (benchmark::State& state) {
     }
 }
 
-#define MIN_ITERATION_RANGE 1 << 8U
-#define MAX_ITERATION_RANGE 1 << 10U
+#define MIN_ITERATION_RANGE 1 << 16U
+#define MAX_ITERATION_RANGE 1 << 20U
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 

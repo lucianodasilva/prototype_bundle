@@ -39,6 +39,7 @@ if (build_console_input)
 endif()
 
 option (build_parallel_testbench "Build parallel_testbench" ON)
+option (build_batch_tester "Build batch testing tool" ON)
 
 option (build_radix_benchmark "Build radix_benchmark" ON)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" ON)
@@ -62,8 +63,10 @@ if (build_parallel_testbench)
 
     add_library(parallel_testbench STATIC ${parallel_testbench_source} ${parallel_testbench_include})
     target_include_directories(parallel_testbench PUBLIC parallel_testbench/include)
+endif()
 
-    # target_link_libraries(parallel_testbench PUBLIC)
+if (build_batch_tester)
+    add_executable(batch_tester batch_tester.cpp)
 endif()
 
 if (build_radix_benchmark)

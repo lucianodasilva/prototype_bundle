@@ -44,8 +44,6 @@ namespace demo_a {
 
 	template < typename t >
 	struct stack {
-	public:
-
 		using value_type = t;
 
 		stack() = default;
@@ -63,72 +61,101 @@ namespace demo_a {
 		void push_back (value_type const & value) {
 			auto * new_node = new node {
 				_head.load(),
-				value };
+				value
+			};
 
-			push (_head, new_node);
+			hook (_head, new_node);
 		}
 
 		value_type pop_back () {
-			++_poppers;
-
-			auto * old_head = _head.load ();
-
-			while(old_head && !_head.compare_exchange_weak (old_head, old_head->next)) {}
+			++_pop_concurrent_callers;
 
 			value_type value = {};
+			auto * unhocked = unhook (_head);
 
-			if (old_head) {
-				value = old_head->value;
-				push(_to_be_deleted, old_head);
+			if (unhocked != nullptr) {
+				value = unhocked->value;
+				try_release (_pop_concurrent_callers, _death_row, unhocked);
 			}
 
-			try_collect ();
-
+			--_pop_concurrent_callers;
 			return value;
 		}
 
 	private:
 
 		struct node {
-		public:
 			node * next;
 			value_type value;
 		};
 
-		std::atomic < node * >	_head { nullptr };
-		std::atomic_int 		_poppers { 0 };
-		std::atomic < node * >	_to_be_deleted { nullptr };
+		static void hook (std::atomic < node * > & head, node * new_node) {
+			new_node->next = head.load ();
 
-		static void push (std::atomic < node * > & head, node * new_node) {
-			for (;;) {
-				new_node->next = head.load ();
+			// lets go for the optimistic approach
+			if (head.compare_exchange_weak (
+				new_node->next,
+				new_node,
+				std::memory_order::memory_order_acquire,
+				std::memory_order::memory_order_relaxed)
+			) {
+				return;
+			}
 
-				if (head.compare_exchange_weak (
+			// lets go for the pessimistic approach
+			while (!head.compare_exchange_weak (
 					new_node->next,
-					new_node))
-					//std::memory_order_release,
-					//std::memory_order_relaxed))
-				{
-					return;
-				}
-
+					new_node,
+					std::memory_order_acquire,
+					std::memory_order_relaxed))
+			{
 				_mm_pause();
 			}
 		}
 
-		void try_collect () {
-			if (_poppers.load (std::memory_order_relaxed) == 1) {
-				auto * to_be_deleted = _to_be_deleted.exchange (nullptr);//, std::memory_order_acquire);
+		static node * unhook (std::atomic < node * > & head) {
+			auto * old_head = head.load (std::memory_order_relaxed);
 
-				while(to_be_deleted) {
-					auto * next = to_be_deleted->next;
-					delete to_be_deleted;
-					to_be_deleted = next;
+			if (old_head) {
+				// lets go for the optimistic approach
+				if (head.compare_exchange_weak (
+					old_head,
+					old_head->next,
+					std::memory_order::memory_order_acquire,
+					std::memory_order::memory_order_relaxed)
+				) {
+					return old_head;
+				}
+
+				// lets go for the pessimistic approach
+				while(old_head && !head.compare_exchange_weak (old_head, old_head->next, std::memory_order_acquire, std::memory_order_relaxed)) {
+					_mm_pause();
 				}
 			}
 
-			--_poppers;
+			return old_head;
 		}
+
+		static void try_release (std::atomic_int const & pop_callers, std::atomic < node * > & death_row, node * dead_node) {
+			hook (death_row, dead_node);
+
+			if (pop_callers.load (std::memory_order_relaxed) == 1) {
+				node * to_delete = dead_node;
+
+				if (death_row.compare_exchange_weak (to_delete, nullptr, std::memory_order_acquire, std::memory_order_release)) {
+					while (to_delete) {
+						auto * next = to_delete->next;
+						delete to_delete;
+						to_delete = next;
+					}
+				}
+			}
+		}
+
+		std::atomic < node * >	_head { nullptr };
+		std::atomic_int 		_pop_concurrent_callers { 0 };
+		std::atomic < node * >	_death_row { nullptr };
+
 	};
 
 }
@@ -137,8 +164,6 @@ namespace demo_b {
 
 	template < typename t >
 	struct stack {
-	public:
-
 		using value_type = t;
 
 		stack() = default;
@@ -187,7 +212,6 @@ namespace demo_b {
 	private:
 
 		struct node {
-		public:
 			node * next;
 			value_type value;
 		};
@@ -222,7 +246,10 @@ void run_pop_mutex (list_t & list, mutex_t & mtx) {
 	run_pop(list);
 }
 
-template < typename list_t, typename mutex_t, ptbench::exec_policy policy >
+//ptbench::executor exec { ptbench::exec_policy::per_physical_core_affinity };
+ptbench::executor exec {};
+
+template < typename list_t, typename mutex_t >
 void run_benchmark_mutex (benchmark::State & state) {
 	list_t list;
 	mutex_t mtx;
@@ -233,15 +260,15 @@ void run_benchmark_mutex (benchmark::State & state) {
 			list.pop_back();
 		}
 
-		ptbench::exec ({
-			{ [&]{ run_push_mutex (list, mtx); }, 50 },
-			{ [&]{ run_pop_mutex (list, mtx); }, 50 }
-		},
-		state.range(0), policy);
+		exec.dispatch ({
+				{ [&]{ run_push_mutex (list, mtx); }, 50 },
+				{ [&]{ run_pop_mutex (list, mtx); }, 50 }
+			},
+			state.range(0));
 	}
 }
 
-template < typename list_t, ptbench::exec_policy policy >
+template < typename list_t >
 void run_benchmark (benchmark::State & state) {
 	list_t list;
 
@@ -251,27 +278,20 @@ void run_benchmark (benchmark::State & state) {
 			list.pop_back();
 		}
 
-		ptbench::exec ({
-			{ [&]{ run_push (list); }, 50 },
-			{ [&]{ run_pop (list); }, 50 }
-		},
-		state.range(0), policy);
+		exec.dispatch ({
+				{ [&]{ run_push (list); }, 50 },
+				{ [&]{ run_pop (list); }, 50 }
+			},
+			state.range(0));
 	}
 }
 
 #define MIN_ITERATION_RANGE 1 << 14U
 #define MAX_ITERATION_RANGE 1 << 16U
 
-#define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
+#define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
 
-BENCHMARK (run_benchmark_mutex < std::list < int >, std::mutex, ptbench::exec_policy::per_physical_core_affinity >)
-	->Name ("mutex - std::list")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-BENCHMARK (run_benchmark_mutex < std::list < int >, spin_mutex, ptbench::exec_policy::per_physical_core_affinity >)
-	->Name ("spin - std::list")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-BENCHMARK (run_benchmark < demo_a::stack < int >, ptbench::exec_policy::per_physical_core_affinity>)
-	->Name ("lockfree queue")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-BENCHMARK (run_benchmark < demo_b::stack < int >, ptbench::exec_policy::per_physical_core_affinity>)
-	->Name ("embeded spin queue")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, std::mutex >), "mutex - std::list");
+MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, spin_mutex >), "spin - std::list");
+MY_BENCHMARK (run_benchmark < demo_a::stack < int > >, "lockfree queue");
+MY_BENCHMARK (run_benchmark < demo_b::stack < int > >, "embeded spin queue");

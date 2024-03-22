@@ -9,8 +9,8 @@
 namespace ptbench {
 
 #if defined (PT_OS_GNU_LINUX)
-    std::vector < cpu_id_t > physical_cpu_cores () {
-        std::vector < cpu_id_t > cores;
+    std::vector < core_id_t > physical_cpu_cores () {
+        std::vector < core_id_t > cores;
 
         auto const CORE_COUNT = std::thread::hardware_concurrency();
 
@@ -43,7 +43,7 @@ namespace ptbench {
         return cores;
     }
 
-    void set_native_thread_afinity (std::thread::native_handle_type thread_handle, cpu_id_t core_id) {
+    void set_native_thread_afinity (std::thread::native_handle_type thread_handle, core_id_t core_id) {
         cpu_set_t cpuset;
 
         CPU_ZERO (&cpuset);
@@ -52,17 +52,17 @@ namespace ptbench {
         pthread_setaffinity_np (thread_handle, sizeof (cpu_set_t), &cpuset);
     }
 
-    std::thread::native_handle_type get_native_this_thread () {
+    std::thread::native_handle_type this_thread_native_handle () {
         return pthread_self ();
     }
 
 #endif
 
-    void set_thread_afinity (std::thread & thread, cpu_id_t core_id) {
+    void set_thread_afinity (std::thread & thread, core_id_t core_id) {
         set_native_thread_afinity (thread.native_handle (), core_id);
     }
 
-    void set_this_thread_afinity (cpu_id_t core_id) {
-        set_native_thread_afinity (get_native_this_thread(), core_id);
+    void set_this_thread_afinity (core_id_t core_id) {
+        set_native_thread_afinity (this_thread_native_handle(), core_id);
     }
 }
