@@ -63,6 +63,11 @@ if (build_parallel_testbench)
 
     add_library(parallel_testbench STATIC ${parallel_testbench_source} ${parallel_testbench_include})
     target_include_directories(parallel_testbench PUBLIC parallel_testbench/include)
+    
+    if (WIN32)
+        target_link_libraries(parallel_testbench PUBLIC
+            Synchronization)
+    endif()
 endif()
 
 if (build_batch_tester)

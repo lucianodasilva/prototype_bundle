@@ -142,7 +142,7 @@ namespace demo_a {
 			if (pop_callers.load (std::memory_order_relaxed) == 1) {
 				node * to_delete = dead_node;
 
-				if (death_row.compare_exchange_weak (to_delete, nullptr, std::memory_order_acquire, std::memory_order_release)) {
+				if (death_row.compare_exchange_weak (to_delete, nullptr, std::memory_order_acquire, std::memory_order_relaxed)) {
 					while (to_delete) {
 						auto * next = to_delete->next;
 						delete to_delete;
@@ -291,7 +291,7 @@ void run_benchmark (benchmark::State & state) {
 
 #define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
 
-MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, std::mutex >), "mutex - std::list");
-MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, spin_mutex >), "spin - std::list");
+//MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, std::mutex >), "mutex - std::list");
+//MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, spin_mutex >), "spin - std::list");
 MY_BENCHMARK (run_benchmark < demo_a::stack < int > >, "lockfree queue");
-MY_BENCHMARK (run_benchmark < demo_b::stack < int > >, "embeded spin queue");
+//MY_BENCHMARK (run_benchmark < demo_b::stack < int > >, "embeded spin queue");

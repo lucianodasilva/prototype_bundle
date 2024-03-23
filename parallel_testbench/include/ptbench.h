@@ -2,9 +2,11 @@
 #ifndef PTBENCH_H
 #define PTBENCH_H
 
+#include <algorithm>
 #include <cinttypes>
 #include <emmintrin.h>
 #include <functional>
+#include <numeric>
 #include <random>
 #include <stdexcept>
 #include <thread>
@@ -49,9 +51,9 @@ namespace ptbench {
     struct barrier {
         static_assert (std::is_standard_layout_v< std::atomic_int32_t >, "std::atomic_int must be standard layout");
 
-        explicit barrier (int const COUNT) :
+        explicit barrier (int32_t const COUNT) :
             COUNTER_RESET_VAL (COUNT),
-            _counter (COUNT)
+            _counter{COUNT}
         {}
 
         barrier (barrier const & ) = delete;
@@ -59,19 +61,19 @@ namespace ptbench {
 
         void arrive_and_wait () {
             auto const WAIT_PHASE = _phase.load ();
-            auto wait_counter = (--_counter);
+            auto wait_counter = (--_counter.atomic);
 
             if (wait_counter > 0) { // if we are waiters... wait
                 while (WAIT_PHASE == _phase.load () && wait_counter > 0) { // NOLINT
-                    futex_wait (reinterpret_cast < int32_t * > (&_counter), wait_counter);
-                    wait_counter = _counter.load();
+                    futex_wait (&_counter.integer, wait_counter);
+                    wait_counter = _counter.atomic.load();
                 }
             } else if (wait_counter == 0) {
                 // complete barrier phase
                 ++_phase;
-                _counter.store(COUNTER_RESET_VAL);
+                _counter.atomic.store(COUNTER_RESET_VAL);
 
-                futex_wake_all (reinterpret_cast < int32_t * > (&_counter));
+                futex_wake_all (&_counter.integer);
             } else {
                 throw std::runtime_error ("Barrier is in invalid state");
             }
@@ -79,7 +81,12 @@ namespace ptbench {
 
     private:
         int32_t const                   COUNTER_RESET_VAL;
-        std::atomic_int32_t             _counter {0};
+        
+        union {
+            std::atomic_int32_t         atomic;
+            int32_t                     integer;
+        } _counter{ 0 };
+
         std::atomic_int32_t             _phase {0};
     };
 

@@ -3,8 +3,10 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace ptbench {
 
@@ -55,7 +57,64 @@ namespace ptbench {
     std::thread::native_handle_type this_thread_native_handle () {
         return pthread_self ();
     }
+#else // PT_OS_WINDOWS
+    std::vector < core_id_t > physical_cpu_cores() {
+        std::vector < core_id_t > cores;
 
+        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer = nullptr;
+        DWORD length_in_bytes = 0;
+
+        // get size of buffer;
+        if (FAILED(GetLogicalProcessorInformation(
+            nullptr,
+            &length_in_bytes)))
+        {
+            std::cerr << "get cpu physical cores failed" << std::endl;
+            return {};
+        }
+
+        buffer = reinterpret_cast <PSYSTEM_LOGICAL_PROCESSOR_INFORMATION> (malloc(length_in_bytes));
+
+        if (!buffer) {
+            std::cerr << "get cpu physical cores allocation failed" << std::endl;
+            return {};
+        }
+
+        if (FAILED(GetLogicalProcessorInformation(
+            buffer,
+            &length_in_bytes)))
+        {
+            std::cerr << "get cpu physical cores failed" << std::endl;
+            return {};
+        }
+
+        auto* it = buffer;
+        auto* end = it + length_in_bytes / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+
+        while (it < end) {
+            if (it->Relationship == RelationProcessorCore) {
+                unsigned long id;
+
+                if (BitScanForward64(&id, it->ProcessorMask)) {
+                    cores.push_back(id);
+                }
+            }
+
+            ++it;
+        }
+
+        free(buffer);
+
+        return cores;
+	}
+
+    void set_native_thread_afinity(std::thread::native_handle_type thread_handle, core_id_t core_id) {
+		SetThreadAffinityMask (thread_handle, DWORD_PTR(1 << core_id));
+	}
+
+    std::thread::native_handle_type this_thread_native_handle() {
+		return GetCurrentThread ();
+	}
 #endif
 
     void set_thread_afinity (std::thread & thread, core_id_t core_id) {

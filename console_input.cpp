@@ -1,3 +1,5 @@
+#if defined __linux
+
 #include <stdio.h>
 #include <unistd.h>
 #include <termios.h>
@@ -36,3 +38,10 @@ int main (void)
 
     return 0;
 }
+#else
+
+int main() {
+	return 0;
+}
+
+#endif

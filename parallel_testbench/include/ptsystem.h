@@ -5,6 +5,7 @@
 #include "ptconfig.h"
 
 #include <atomic>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -12,19 +13,19 @@
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 namespace ptbench {
 
-#if defined (PT_OS_GNU_LINUX)
     using futex_t = int32_t;
 
+#if defined (PT_OS_GNU_LINUX)
     inline bool futex_wait (futex_t * address, futex_t expected) {
         return syscall (SYS_futex, address, FUTEX_WAIT_PRIVATE, expected, nullptr, nullptr, 0) == 0;
-    }
-
-    inline void futex_wake (futex_t * address, std::size_t waiters) {
-        syscall (SYS_futex, address, FUTEX_WAKE_PRIVATE, waiters, nullptr, nullptr, 0);
     }
 
     inline void futex_wake_all (futex_t * address) {
@@ -34,6 +35,18 @@ namespace ptbench {
     inline void futex_wake_one (futex_t * address) {
         futex_wake (address, 1);
     }
+#else
+    inline void futex_wait(futex_t* address, futex_t expected) {
+		WaitOnAddress (address, &expected, sizeof (futex_t), INFINITE);
+	}
+
+    inline void futex_wake_all(futex_t* address) {
+		WakeByAddressAll(address);
+	}
+
+    inline void futex_wake_one(futex_t* address) {
+		WakeByAddressSingle(address);
+	}
 #endif
 
     using core_id_t = std::size_t;

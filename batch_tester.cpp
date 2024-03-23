@@ -1,6 +1,11 @@
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <sys/fcntl.h>
+#if defined (_WIN32) || defined (_WIN64)
+#   define WIN32_LEAN_AND_MEAN
+#   include <windows.h>
+#else
+#   include <sys/types.h>
+#   include <sys/wait.h>
+#   incslude <sys/fcntl.h>
+#endif
 
 #include <chrono>
 #include <cstring>
@@ -8,6 +13,7 @@
 #include <filesystem>
 #include <map>
 #include <thread>
+#include <optional>
 
 struct exec_report {
     std::map < int, std::size_t >   exit_code_count;
@@ -30,6 +36,59 @@ void dump_report (exec_report const & report, std::size_t iterations) {
         std::cout << "[" << EXIT_CODE << ": " << COUNT << "]" << std::endl;
     }
 }
+
+#if defined (_WIN32) || defined (_WIN64)
+
+using process_handle_t = HANDLE;
+
+std::optional < process_handle_t > run_process(std::filesystem::path const& PATH) {
+    STARTUPINFO si{};
+    PROCESS_INFORMATION pi{};
+
+	si.cb = sizeof(si);
+    
+    if (!CreateProcess(
+        static_cast < LPCSTR > (PATH.string().c_str()),
+        nullptr,
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &si,
+        &pi
+    )) {
+		std::cerr << "Failed to create process with error: " << GetLastError() << std::endl;
+		return std::nullopt;
+	}
+
+	CloseHandle(pi.hThread);
+
+	return pi.hProcess;
+}
+
+void run_monitor(process_handle_t const HANDLE, exec_report& report, std::chrono::milliseconds const TIMEOUT) {
+    DWORD waitResult = WaitForSingleObject(HANDLE, TIMEOUT.count());
+
+    if (waitResult == WAIT_TIMEOUT) {
+        // Timeout occurred, kill the process
+        TerminateProcess(HANDLE, 0);
+        ++report.timed_out_count;
+    } else if (waitResult == WAIT_OBJECT_0) {
+        // Process has exited
+        DWORD exitCode;
+        GetExitCodeProcess(HANDLE, &exitCode);
+        ++report.exit_code_count[exitCode];
+    } else {
+        // Error occurred
+        std::cerr << "Failed to wait for process with error: " << GetLastError() << std::endl;
+    }
+
+    CloseHandle(HANDLE);
+}
+
+#else
 
 void run_monitor (exec_report & report, pid_t pid, std::chrono::milliseconds const TIMEOUT) {
     int status = 0;
@@ -63,7 +122,22 @@ void run_monitor (exec_report & report, pid_t pid, std::chrono::milliseconds con
 }
 
 bool run_process (std::filesystem::path const & PATH) {
-    // open /dev/null
+    pid_t pid = vfork();
+
+    if (pid < 0) {
+        std::cerr << "Failed to fork process with error:" << std::to_string(pid) << std::endl;
+        return false;
+    }
+
+    if (pid > 0) {
+        // parent process
+        //TODO: report pid
+        return true;
+    }
+
+    // child process
+
+    // redirect process output to /dev/null
     int dev_null = ::open("/dev/null", O_WRONLY);
 
     if (dev_null == -1) {
@@ -81,6 +155,8 @@ bool run_process (std::filesystem::path const & PATH) {
     char * NONE = nullptr;
     return execvp (PATH.c_str(), &NONE) == 0;
 }
+
+#endif
 
 int main (int const ARG_C, char const ** ARG_V) {
     // get child executable path from command line
@@ -113,24 +189,17 @@ int main (int const ARG_C, char const ** ARG_V) {
 
     while (it_cursor > 0) {
         auto const START_TIME = std::chrono::system_clock::now();
-        pid_t pid = vfork();
 
-        if (pid < 0) {
-            std::cerr << "Failed to fork process with error:" << std::to_string(pid) << std::endl;
+        // parent process
+        auto opt_pid = run_process(executable_path);
+        
+        if (!opt_pid) {
+            // run process failed, beter bail out
             return 1;
         }
 
-        if (pid == 0) {
-            // child process
-            if (!run_process(executable_path)) {
-                return -1;
-            }
+        run_monitor(opt_pid.value(), report, timeout);
 
-            return 0;
-        }
-
-        // parent process
-        run_monitor(report, pid, timeout);
         report.runtime_accumulator += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - START_TIME);
         --it_cursor;
     }
