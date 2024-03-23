@@ -88,6 +88,43 @@ namespace demo_c {
 
 }
 
+namespace demo_futex {
+
+    struct futex {
+        static_assert (std::is_standard_layout_v< std::atomic_int32_t >, "std::atomic_int must be standard layout");
+
+        void lock() noexcept {
+            for (;;) {
+                // lets try the optimistic trick
+                if (_flag.atomic.exchange(1, std::memory_order_acquire) == 0) {
+                    return;
+                }
+
+                // try and relock on futex awake
+                while (_flag.atomic.load(std::memory_order_relaxed) == 1) {
+                    ptbench::futex_wait(&_flag.integer, 1);
+                }
+            }
+        }
+
+        bool try_lock() noexcept {
+            return _flag.atomic.exchange(1, std::memory_order_acquire) == 0;
+        }
+
+        void unlock() noexcept {
+            _flag.atomic.store(0, std::memory_order_release);
+            ptbench::futex_wake_one(&_flag.integer);
+        }
+
+    private:
+        union {
+            std::atomic_int32_t atomic;
+            int32_t             integer;
+        } _flag {0};
+        
+    };
+}
+
 // test with "real work use cases" for a more accurate comparison
 template < typename mutex_t >
 void run_push (std::vector < uint_fast32_t > & data, mutex_t & mtx) {
@@ -138,16 +175,8 @@ void run_benchmark (benchmark::State& state) {
 #define MIN_ITERATION_RANGE 1 << 16U
 #define MAX_ITERATION_RANGE 1 << 20U
 
-#define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
+#define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
 
-BENCHMARK (run_benchmark < std::mutex >)
-    ->Name ("mutex - baseline")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-//BENCHMARK (run_benchmark < demo_a::spin_mutex >)
-//    ->Name ("naive spin lock")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-BENCHMARK (run_benchmark < demo_b::spin_mutex >)
-    ->Name ("slock - relaxed memory order")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
-
-BENCHMARK (run_benchmark < demo_c::spin_mutex >)
-    ->Name ("slock - expert")->RANGE->Unit(benchmark::TimeUnit::kMillisecond);
+MY_BENCHMARK(run_benchmark < std::mutex >, "mutex - baseline");
+MY_BENCHMARK(run_benchmark < demo_b::spin_mutex >, "spin (expert)");
+MY_BENCHMARK(run_benchmark < demo_futex::futex >, "futex");

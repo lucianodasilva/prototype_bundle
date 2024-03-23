@@ -36,8 +36,8 @@ namespace ptbench {
         futex_wake (address, 1);
     }
 #else
-    inline void futex_wait(futex_t* address, futex_t expected) {
-		WaitOnAddress (address, &expected, sizeof (futex_t), INFINITE);
+    inline bool futex_wait(futex_t* address, futex_t expected) {
+		return WaitOnAddress (address, &expected, sizeof (futex_t), INFINITE) == TRUE;
 	}
 
     inline void futex_wake_all(futex_t* address) {

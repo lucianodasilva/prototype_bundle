@@ -1,9 +1,13 @@
 {
-  "name" : "prototype-bundle",
-  "version-string" : "1.0.0",
-  "dependencies" : [ {
-    "name" : "benchmark"
-  }, {
-    "name" : "glm"
-  } ]
+  "name": "prototype-bundle",
+  "version-string": "1.0.0",
+  "dependencies": [
+    {
+      "name": "benchmark"
+    },
+    {
+      "name": "glm"
+    }
+  ],
+  "builtin-baseline": "a34c873a9717a888f58dc05268dea15592c2f0ff"
 }

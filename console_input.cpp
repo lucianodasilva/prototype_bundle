@@ -29,6 +29,7 @@ int main (void)
 
         if (char_in == '\033')
             running = false;
+
     }
 
     // restore input mode
