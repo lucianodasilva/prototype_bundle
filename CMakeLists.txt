@@ -15,6 +15,7 @@ macro (append_source path out)
     list (APPEND ${out} ${sources})
 endmacro()
 
+include_directories (${CMAKE_CURRENT_LIST_DIR})
 
 set(CMAKE_CXX_STANDARD 17)
 # Test LTO
@@ -40,6 +41,8 @@ endif()
 
 option (build_parallel_testbench "Build parallel_testbench" ON)
 option (build_batch_tester "Build batch testing tool" ON)
+
+option (build_lockfree_stack_run "Build lockfree_stack long running test" ON)
 
 option (build_radix_benchmark "Build radix_benchmark" ON)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" ON)
@@ -157,4 +160,9 @@ endif()
 if (build_tracing_ptr)
     add_executable (tracing_ptr benchmarks/tracing_ptr.cpp)
     target_link_libraries (tracing_ptr PUBLIC benchmark::benchmark benchmark::benchmark_main)
+endif()
+
+if (build_lockfree_stack_run)
+    add_executable(lockfree_stack_run lockfree_stack_run.cpp)
+    target_link_libraries(lockfree_stack_run PUBLIC parallel_testbench)
 endif()

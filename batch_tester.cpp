@@ -18,8 +18,25 @@
 struct exec_report {
     std::map < int, std::size_t >   exit_code_count;
     std::size_t                     timed_out_count = 0;
-    std::chrono::milliseconds       runtime_accumulator;
+    std::chrono::milliseconds       it_runtime_accumulator {};
+    std::chrono::milliseconds       runtime {};
 };
+
+std::string time_format (std::chrono::milliseconds const TIME) {
+    std::stringstream stream;
+    auto const HOURS = std::chrono::duration_cast < std::chrono::hours > (TIME).count ();
+    auto const MINUTES = std::chrono::duration_cast < std::chrono::minutes > (TIME).count () % 60;
+    auto const SECONDS = std::chrono::duration_cast < std::chrono::seconds > (TIME).count () % 60;
+    auto const MS = std::chrono::duration_cast < std::chrono::milliseconds > (TIME).count () % 1000;
+
+    stream
+        << std::setw (2) << std::setfill ('0') << HOURS << ":"
+        << std::setw (2) << std::setfill ('0') << MINUTES << ":"
+        << std::setw (2) << std::setfill ('0') << SECONDS << "."
+        << std::setw (3) << std::setfill ('0') << MS;
+
+    return stream.str ();
+}
 
 void dump_report (exec_report const & report, std::size_t iterations) {
     std::cout << "Execution Report:" << std::endl;
@@ -28,13 +45,18 @@ void dump_report (exec_report const & report, std::size_t iterations) {
 
     std::cout << "Success: " << success_count << std::endl;
     std::cout << "Timed out: " << report.timed_out_count << std::endl;
-    std::cout << "Runtime Avg: " << report.runtime_accumulator.count() / iterations << "ms" << std::endl;
+    std::cout << "Avg Iteration Time: " << report.it_runtime_accumulator.count() / iterations << "ms" << std::endl;
+    std::cout << "Runtime: " << time_format (report.runtime) << std::endl;
     std::cout << std::endl;
 
-    std::cout << "Exit Codes: " << std::endl;
-    for (auto const & [EXIT_CODE, COUNT] : report.exit_code_count) {
-        std::cout << "[" << EXIT_CODE << ": " << COUNT << "]" << std::endl;
+    if (success_count != iterations) {
+        std::cout << "Exit Code Counters: " << std::endl;
+        for (auto const & [EXIT_CODE, COUNT] : report.exit_code_count) {
+            std::cout << "[" << EXIT_CODE << ": " << COUNT << "]" << std::endl;
+        }
     }
+
+    std::cout << std::endl;
 }
 
 #if defined (_WIN32) || defined (_WIN64)
@@ -161,6 +183,8 @@ std::optional < process_handle_t > run_process (std::filesystem::path const & PA
 #endif
 
 int main (int const ARG_C, char const ** ARG_V) {
+    auto const START_TIME = std::chrono::system_clock::now();
+
     // get child executable path from command line
     if (ARG_C != 4) {
         std::cerr << "Usage: " << ARG_V[0] << " <executable_path> <iterations> <timeout_ms>" << std::endl;
@@ -190,7 +214,7 @@ int main (int const ARG_C, char const ** ARG_V) {
     auto it_cursor = iterations;
 
     while (it_cursor > 0) {
-        auto const START_TIME = std::chrono::system_clock::now();
+        auto const START_IT_TIME = std::chrono::system_clock::now();
 
         // parent process
         auto opt_pid = run_process(executable_path);
@@ -202,10 +226,11 @@ int main (int const ARG_C, char const ** ARG_V) {
 
         run_monitor(opt_pid.value(), report, timeout);
 
-        report.runtime_accumulator += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - START_TIME);
+        report.it_runtime_accumulator += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - START_IT_TIME);
         --it_cursor;
     }
 
+    report.runtime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - START_TIME);
     dump_report(report, iterations);
 
     return 0;

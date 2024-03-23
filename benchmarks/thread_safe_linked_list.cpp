@@ -6,6 +6,7 @@
 #include <xmmintrin.h>
 #include <stack>
 #include <list>
+#include <lockfree_stack.h>
 
 struct spin_mutex {
 
@@ -39,126 +40,6 @@ struct spin_mutex {
 private:
 	std::atomic_bool _lock { false };
 };
-
-namespace demo_a {
-
-	template < typename t >
-	struct stack {
-		using value_type = t;
-
-		stack() = default;
-
-		~stack () {
-			while(!empty()) {
-				pop_back();
-			}
-		}
-
-		[[nodiscard]] bool empty() const {
-			return _head.load () == nullptr;
-		}
-
-		void push_back (value_type const & value) {
-			auto * new_node = new node {
-				_head.load(),
-				value
-			};
-
-			hook (_head, new_node);
-		}
-
-		value_type pop_back () {
-			++_pop_concurrent_callers;
-
-			value_type value = {};
-			auto * unhocked = unhook (_head);
-
-			if (unhocked != nullptr) {
-				value = unhocked->value;
-				try_release (_pop_concurrent_callers, _death_row, unhocked);
-			}
-
-			--_pop_concurrent_callers;
-			return value;
-		}
-
-	private:
-
-		struct node {
-			node * next;
-			value_type value;
-		};
-
-		static void hook (std::atomic < node * > & head, node * new_node) {
-			new_node->next = head.load ();
-
-			// lets go for the optimistic approach
-			if (head.compare_exchange_weak (
-				new_node->next,
-				new_node,
-				std::memory_order::memory_order_acquire,
-				std::memory_order::memory_order_relaxed)
-			) {
-				return;
-			}
-
-			// lets go for the pessimistic approach
-			while (!head.compare_exchange_weak (
-					new_node->next,
-					new_node,
-					std::memory_order_acquire,
-					std::memory_order_relaxed))
-			{
-				_mm_pause();
-			}
-		}
-
-		static node * unhook (std::atomic < node * > & head) {
-			auto * old_head = head.load (std::memory_order_relaxed);
-
-			if (old_head) {
-				// lets go for the optimistic approach
-				if (head.compare_exchange_weak (
-					old_head,
-					old_head->next,
-					std::memory_order::memory_order_acquire,
-					std::memory_order::memory_order_relaxed)
-				) {
-					return old_head;
-				}
-
-				// lets go for the pessimistic approach
-				while(old_head && !head.compare_exchange_weak (old_head, old_head->next, std::memory_order_acquire, std::memory_order_relaxed)) {
-					_mm_pause();
-				}
-			}
-
-			return old_head;
-		}
-
-		static void try_release (std::atomic_int const & pop_callers, std::atomic < node * > & death_row, node * dead_node) {
-			hook (death_row, dead_node);
-
-			if (pop_callers.load (std::memory_order_relaxed) == 1) {
-				node * to_delete = dead_node;
-
-				if (death_row.compare_exchange_weak (to_delete, nullptr, std::memory_order_acquire, std::memory_order_relaxed)) {
-					while (to_delete) {
-						auto * next = to_delete->next;
-						delete to_delete;
-						to_delete = next;
-					}
-				}
-			}
-		}
-
-		std::atomic < node * >	_head { nullptr };
-		std::atomic_int 		_pop_concurrent_callers { 0 };
-		std::atomic < node * >	_death_row { nullptr };
-
-	};
-
-}
 
 namespace demo_b {
 
@@ -293,5 +174,5 @@ void run_benchmark (benchmark::State & state) {
 
 //MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, std::mutex >), "mutex - std::list");
 //MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, spin_mutex >), "spin - std::list");
-MY_BENCHMARK (run_benchmark < demo_a::stack < int > >, "lockfree queue");
-//MY_BENCHMARK (run_benchmark < demo_b::stack < int > >, "embeded spin queue");
+MY_BENCHMARK (run_benchmark < lockfree_stack < int > >, "lockfree stack");
+//MY_BENCHMARK (run_benchmark < demo_b::stack < int > >, "embeded spin stack");
