@@ -4,7 +4,7 @@
 #else
 #   include <sys/types.h>
 #   include <sys/wait.h>
-#   incslude <sys/fcntl.h>
+#   include <sys/fcntl.h>
 #endif
 
 #include <chrono>
@@ -89,13 +89,14 @@ void run_monitor(process_handle_t const HANDLE, exec_report& report, std::chrono
 }
 
 #else
+using process_handle_t = pid_t;
 
-void run_monitor (exec_report & report, pid_t pid, std::chrono::milliseconds const TIMEOUT) {
+void run_monitor (process_handle_t const HANDLE, exec_report & report, std::chrono::milliseconds const TIMEOUT) {
     int status = 0;
     auto const START_TIME = std::chrono::system_clock::now();
 
     do {
-        auto const WAIT_RES = waitpid(pid, &status, WNOHANG | WUNTRACED);
+        auto const WAIT_RES = waitpid(HANDLE, &status, WNOHANG | WUNTRACED);
 
         if (WAIT_RES == 0) {
             // child is still running
@@ -117,22 +118,22 @@ void run_monitor (exec_report & report, pid_t pid, std::chrono::milliseconds con
     } while (std::chrono::system_clock::now() - START_TIME < TIMEOUT);
 
     // timeout
-    kill(pid, SIGKILL);
+    kill(HANDLE, SIGKILL);
     ++report.timed_out_count;
 }
 
-bool run_process (std::filesystem::path const & PATH) {
+std::optional < process_handle_t > run_process (std::filesystem::path const & PATH) {
     pid_t pid = vfork();
 
     if (pid < 0) {
         std::cerr << "Failed to fork process with error:" << std::to_string(pid) << std::endl;
-        return false;
+        return std::nullopt;
     }
 
     if (pid > 0) {
         // parent process
         //TODO: report pid
-        return true;
+        return pid;
     }
 
     // child process
@@ -142,18 +143,19 @@ bool run_process (std::filesystem::path const & PATH) {
 
     if (dev_null == -1) {
         std::cerr << "Failed to open /dev/null" << std::endl;
-        return false;
+        return std::nullopt;
     }
 
     // redirect standard output and standard error to /dev/null
     if (dup2(dev_null, STDOUT_FILENO) == -1 || dup2(dev_null, STDERR_FILENO) == -1) {
         std::cerr << "Failed to redirect output" << std::endl;
-        return false;
+        return std::nullopt;
     }
 
     // replace child process with new executable
     char * NONE = nullptr;
-    return execvp (PATH.c_str(), &NONE) == 0;
+    execvp (PATH.c_str(), &NONE);
+    return std::nullopt;
 }
 
 #endif

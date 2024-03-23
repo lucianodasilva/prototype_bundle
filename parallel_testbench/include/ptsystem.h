@@ -29,11 +29,11 @@ namespace ptbench {
     }
 
     inline void futex_wake_all (futex_t * address) {
-        futex_wake (address, std::numeric_limits<int>::max());
+        syscall (SYS_futex, address, FUTEX_WAKE_PRIVATE, std::numeric_limits<int>::max(), nullptr, nullptr, 0);
     }
 
     inline void futex_wake_one (futex_t * address) {
-        futex_wake (address, 1);
+        syscall (SYS_futex, address, FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
     }
 #else
     inline bool futex_wait(futex_t* address, futex_t expected) {
