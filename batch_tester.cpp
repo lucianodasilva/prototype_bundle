@@ -47,16 +47,13 @@ void dump_report (exec_report const & report, std::size_t iterations) {
     std::cout << "Timed out: " << report.timed_out_count << std::endl;
     std::cout << "Avg Iteration Time: " << report.it_runtime_accumulator.count() / iterations << "ms" << std::endl;
     std::cout << "Runtime: " << time_format (report.runtime) << std::endl;
-    std::cout << std::endl;
 
-    if (success_count != iterations) {
-        std::cout << "Exit Code Counters: " << std::endl;
+    if (success_count != iterations && report.exit_code_count.size() > 1) {
+        std::cout << "== Exit Code Counters == " << std::endl;
         for (auto const & [EXIT_CODE, COUNT] : report.exit_code_count) {
             std::cout << "[" << EXIT_CODE << ": " << COUNT << "]" << std::endl;
         }
     }
-
-    std::cout << std::endl;
 }
 
 #if defined (_WIN32) || defined (_WIN64)

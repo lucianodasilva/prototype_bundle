@@ -12,13 +12,26 @@ struct lockfree_stack {
 	lockfree_stack() = default;
 
 	~lockfree_stack () {
-		while(!empty()) {
-			pop_back();
-		}
+		this->clear ();
 	}
 
 	[[nodiscard]] bool empty() const {
-		return _head.load () == nullptr;
+		return _head.load (std::memory_order_relaxed) == nullptr;
+	}
+
+	void clear () {
+//		auto caller_guard = pop_guard (this->_pop_concurrent_callers);
+//
+//		auto * dead_head = _head.exchange (nullptr, std::memory_order_relaxed);
+//
+//		while (dead_head) {
+//			auto * next = dead_head->next;
+//			delete dead_head;
+//			dead_head = next;
+//		}
+		// while (!this->empty()) {
+		// 	this->pop_back ();
+		// }
 	}
 
 	void push_back (value_type const & value) {
@@ -31,6 +44,7 @@ struct lockfree_stack {
 	}
 
 	value_type pop_back () {
+		// auto caller_guard = pop_guard (this->_pop_concurrent_callers);
 		++_pop_concurrent_callers;
 
 		value_type value = {};
@@ -46,6 +60,13 @@ struct lockfree_stack {
 	}
 
 private:
+
+	struct pop_guard {
+		explicit pop_guard (std::atomic < int > & pop_callers) : _pop_callers (pop_callers) { ++pop_callers; }
+		~pop_guard () { --_pop_callers; }
+	private:
+		std::atomic < int > & _pop_callers;
+	};
 
 	struct node {
 		node * next;
