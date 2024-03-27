@@ -47,7 +47,7 @@ std::optional < std::size_t > map_duration_to_iterations (run_duration duration)
 
 int main (int const ARG_C, char const * const * ARG_V) {
 
-    run_duration duration = run_duration::medium;
+    run_duration duration = run_duration::small;
 
     if (ARG_C == 2) {
         if (!from_string (ARG_V[1], duration)) {

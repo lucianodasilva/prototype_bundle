@@ -20,18 +20,29 @@ struct lockfree_stack {
 	}
 
 	void clear () {
-//		auto caller_guard = pop_guard (this->_pop_concurrent_callers);
-//
-//		auto * dead_head = _head.exchange (nullptr, std::memory_order_relaxed);
-//
-//		while (dead_head) {
-//			auto * next = dead_head->next;
-//			delete dead_head;
-//			dead_head = next;
-//		}
-		// while (!this->empty()) {
-		// 	this->pop_back ();
-		// }
+		auto caller_guard = pop_guard (this->_pop_concurrent_callers);
+
+		// highjack live nodes
+		auto * live_list = _head.exchange (nullptr, std::memory_order_relaxed);
+
+		if (live_list == nullptr) {
+            return;
+        }
+
+		auto * live_tail = tail (live_list);
+		auto * death_row = _death_row.load (std::memory_order_relaxed);
+
+		// append death row to live list (optimistic)
+		live_tail->next = death_row;
+
+		if (!_death_row.compare_exchange_weak (death_row, live_list, std::memory_order_acquire, std::memory_order_relaxed)) {
+            // append death row to live list (pessimistic)
+			do {
+				live_tail->next = death_row;
+			} while (!_death_row.compare_exchange_weak (death_row, live_list, std::memory_order_acquire, std::memory_order_relaxed));
+        }
+
+		try_release (_pop_concurrent_callers, _death_row);
 	}
 
 	void push_back (value_type const & value) {
@@ -44,18 +55,19 @@ struct lockfree_stack {
 	}
 
 	value_type pop_back () {
-		// auto caller_guard = pop_guard (this->_pop_concurrent_callers);
-		++_pop_concurrent_callers;
+		auto caller_guard = pop_guard (this->_pop_concurrent_callers);
+		//++_pop_concurrent_callers;
 
 		value_type value = {};
 		auto * unhocked = unhook (_head);
 
 		if (unhocked != nullptr) {
 			value = unhocked->value;
-			try_release (_pop_concurrent_callers, _death_row, unhocked);
+			hook (_death_row, unhocked); // append to death row
+			try_release (_pop_concurrent_callers, _death_row);
 		}
 
-		--_pop_concurrent_callers;
+		//--_pop_concurrent_callers;
 		return value;
 	}
 
@@ -120,12 +132,10 @@ private:
 		return old_head;
 	}
 
-	static void try_release (std::atomic_int const & pop_callers, std::atomic < node * > & death_row, node * dead_node) {
-		hook (death_row, dead_node);
+	static void try_release (std::atomic_int const & pop_callers, std::atomic < node * > & death_row) {
+		node * to_delete = death_row.load (std::memory_order_relaxed);
 
 		if (pop_callers.load (std::memory_order_relaxed) == 1) {
-			node * to_delete = dead_node;
-
 			if (death_row.compare_exchange_weak (to_delete, nullptr, std::memory_order_acquire, std::memory_order_relaxed)) {
 				while (to_delete) {
 					auto * next = to_delete->next;
@@ -134,6 +144,17 @@ private:
 				}
 			}
 		}
+	}
+
+	static node * tail (node * head) {
+		node * tail = nullptr;
+
+		while (head) {
+			tail = head;
+			head = head->next;
+		}
+
+		return tail;
 	}
 
 	std::atomic < node * >	_head { nullptr };
