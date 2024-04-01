@@ -1,0 +1,21 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg-configuration.schema.json",
+    "default-registry": {
+        "kind": "git",
+        "baseline": "3c76dc55f8bd2b7f4824bcd860055094bfbbb9ea",
+        "repository": "https://github.com/microsoft/vcpkg"
+    },
+    "registries": [
+        {
+            "kind": "artifact",
+            "location": "https://github.com/microsoft/vcpkg-ce-catalog/archive/refs/heads/main.zip",
+            "name": "microsoft"
+        },
+        {
+            "kind": "git",
+            "repository": "https://github.com/lucianodasilva/vcpkg-registry",
+            "baseline": "6710b6d20c27632e55ab171086f5ba82c7d5425f",
+            "packages": [ "las" ]
+        }
+    ]
+}

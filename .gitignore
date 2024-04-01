@@ -3,5 +3,6 @@ cmake-build-*
 .vscode/
 build/
 /.vs
-/cmake-build-relwithdebinfo
 /CMakeSettings.json
+
+vcpkg_installed/

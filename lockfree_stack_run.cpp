@@ -1,5 +1,6 @@
 #include <lockfree_stack.h>
-#include <ptbench.h>
+#include <las/test/concurrent_stress_tester.hpp>
+#include <las/test/random.hpp>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -67,11 +68,11 @@ int main (int const ARG_C, char const * const * ARG_V) {
 
     // test infrastructure
     lockfree_stack < uint_fast32_t > stack;
-    ptbench::executor exec {};
+    las::test::concurrent_stress_tester stress {};
 
     for (int i = 10; i < OPT_ITER.value(); ++i) {
-        exec.dispatch ({
-                { [&]{ stack.push_back (ptbench::uniform (1000)); }, 50 },
+        stress.dispatch ({
+                { [&]{ stack.push_back (las::test::uniform (1000)); }, 50 },
                 { [&]{ stack.pop_back (); }, 50 },
                 {[&]{ stack.clear (); }, 5 },
             },

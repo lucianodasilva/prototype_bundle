@@ -1,11 +1,10 @@
 #include <benchmark/benchmark.h>
-#include <ptbench.h>
+#include <las/test/concurrent_stress_tester.hpp>
+#include <las/test/random.hpp>
 #include <atomic>
 #include <mutex>
 #include <memory>
 #include <xmmintrin.h>
-#include <stack>
-#include <list>
 #include <lockfree_stack.h>
 
 struct spin_mutex {
@@ -105,7 +104,7 @@ namespace demo_b {
 
 template < typename list_t >
 void run_push (list_t & list) {
-	list.push_back (ptbench::uniform(1000));
+	list.push_back (las::test::uniform(1000));
 }
 
 template < typename list_t >
@@ -128,7 +127,7 @@ void run_pop_mutex (list_t & list, mutex_t & mtx) {
 }
 
 //ptbench::executor exec { ptbench::exec_policy::per_physical_core_affinity };
-ptbench::executor exec {};
+las::test::concurrent_stress_tester stresser {};
 
 template < typename list_t, typename mutex_t >
 void run_benchmark_mutex (benchmark::State & state) {
@@ -141,7 +140,7 @@ void run_benchmark_mutex (benchmark::State & state) {
 			list.pop_back();
 		}
 
-		exec.dispatch ({
+		stresser.dispatch ({
 				{ [&]{ run_push_mutex (list, mtx); }, 50 },
 				{ [&]{ run_pop_mutex (list, mtx); }, 50 }
 			},
@@ -159,7 +158,7 @@ void run_benchmark (benchmark::State & state) {
 			list.pop_back();
 		}
 
-		exec.dispatch ({
+		stresser.dispatch ({
 				{ [&]{ run_push (list); }, 50 },
 				{ [&]{ run_pop (list); }, 50 }
 			},

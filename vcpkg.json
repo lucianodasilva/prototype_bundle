@@ -2,11 +2,8 @@
   "name": "prototype-bundle",
   "version-string": "1.0.0",
   "dependencies": [
-    {
-      "name": "benchmark"
-    },
-    {
-      "name": "glm"
-    }
+    "benchmark",
+    "glm",
+    "las"
   ]
 }

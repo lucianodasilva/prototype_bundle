@@ -1,5 +1,6 @@
 #include <benchmark/benchmark.h>
-#include <ptbench.h>
+#include <las/las.h>
+#include <las/test/concurrent_stress_tester.hpp>
 #include <mutex>
 #include <immintrin.h>
 
@@ -102,7 +103,7 @@ namespace demo_futex {
 
                 // try and relock on futex awake
                 while (_flag.atomic.load(std::memory_order_relaxed) == 1) {
-                    ptbench::futex_wait(&_flag.integer, 1);
+                    las::futex_wait(&_flag.integer, 1);
                 }
             }
         }
@@ -113,7 +114,7 @@ namespace demo_futex {
 
         void unlock() noexcept {
             _flag.atomic.store(0, std::memory_order_release);
-            ptbench::futex_wake_one(&_flag.integer);
+            las::futex_wake_one(&_flag.integer);
         }
 
     private:
@@ -129,7 +130,7 @@ namespace demo_futex {
 template < typename mutex_t >
 void run_push (std::vector < uint_fast32_t > & data, mutex_t & mtx) {
     std::lock_guard < mutex_t > const LOCK { mtx };
-    data.push_back (ptbench::uniform (1000));
+    data.push_back (las::test::uniform (1000));
 }
 
 template < typename mutex_t >
@@ -152,7 +153,7 @@ void run_browse (std::vector < uint_fast32_t > & data, mutex_t & mtx) {
     }
 }
 
-ptbench::executor exec {};
+las::test::concurrent_stress_tester stresser {};
 
 template < typename mutex_t >
 void run_benchmark (benchmark::State& state) {
@@ -162,7 +163,7 @@ void run_benchmark (benchmark::State& state) {
     while (state.KeepRunning()) {
         data.clear ();
 
-        exec.dispatch (
+        stresser.dispatch (
             {
                 { [&]{ run_push (data, mtx); }, 25 },
                 { [&]{ run_pop (data, mtx); }, 25 },

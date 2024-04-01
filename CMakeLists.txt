@@ -39,7 +39,6 @@ if (build_console_input)
     add_executable(console_input console_input.cpp)
 endif()
 
-option (build_parallel_testbench "Build parallel_testbench" ON)
 option (build_batch_tester "Build batch testing tool" ON)
 
 option (build_lockfree_stack_run "Build lockfree_stack long running test" ON)
@@ -59,19 +58,7 @@ option (build_tracing_ptr "build tracing ptr benchmark" ON)
 
 find_package(benchmark CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
-
-if (build_parallel_testbench)
-    append_source(parallel_testbench/src parallel_testbench_source)
-    append_source(parallel_testbench/include parallel_testbench_include)
-
-    add_library(parallel_testbench STATIC ${parallel_testbench_source} ${parallel_testbench_include})
-    target_include_directories(parallel_testbench PUBLIC parallel_testbench/include)
-    
-    if (WIN32)
-        target_link_libraries(parallel_testbench PUBLIC
-            Synchronization)
-    endif()
-endif()
+find_package(las CONFIG REQUIRED)
 
 if (build_batch_tester)
     add_executable(batch_tester batch_tester.cpp)
@@ -92,7 +79,7 @@ if (build_spinlock_benchmark)
     target_link_libraries(spinlock_benchmark PUBLIC
             benchmark::benchmark
             benchmark::benchmark_main
-            parallel_testbench)
+            las::test)
 endif()
 
 if (build_gc_prototype_benchmark)
@@ -144,7 +131,7 @@ endif()
 
 if (build_thread_safe_linked_list)
     add_executable (thread_safe_linked_list benchmarks/thread_safe_linked_list.cpp)
-    target_link_libraries (thread_safe_linked_list PUBLIC benchmark::benchmark benchmark::benchmark_main parallel_testbench)
+    target_link_libraries (thread_safe_linked_list PUBLIC benchmark::benchmark benchmark::benchmark_main las::test)
 endif()
 
 if (build_thread_local_vs_others)
@@ -164,5 +151,5 @@ endif()
 
 if (build_lockfree_stack_run)
     add_executable(lockfree_stack_run lockfree_stack_run.cpp)
-    target_link_libraries(lockfree_stack_run PUBLIC parallel_testbench)
+    target_link_libraries(lockfree_stack_run PUBLIC las::test)
 endif()
