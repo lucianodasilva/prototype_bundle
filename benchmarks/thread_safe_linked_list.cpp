@@ -2,10 +2,12 @@
 #include <las/test/concurrent_stress_tester.hpp>
 #include <las/test/random.hpp>
 #include <atomic>
+#include <list>
 #include <mutex>
 #include <memory>
 #include <xmmintrin.h>
 #include <lockfree_stack.h>
+#include <stack>
 
 struct spin_mutex {
 
@@ -104,13 +106,13 @@ namespace demo_b {
 
 template < typename list_t >
 void run_push (list_t & list) {
-	list.push_back (las::test::uniform(1000));
+	list.push (las::test::uniform(1000));
 }
 
 template < typename list_t >
 void run_pop (list_t & list) {
 	if (!list.empty()) {
-		list.pop_back();
+		list.pop();
 	}
 }
 
@@ -137,7 +139,7 @@ void run_benchmark_mutex (benchmark::State & state) {
 	for (auto _ : state) {
 		// clear list
 		while(!list.empty ()) {
-			list.pop_back();
+			list.pop();
 		}
 
 		stresser.dispatch ({
@@ -155,7 +157,7 @@ void run_benchmark (benchmark::State & state) {
 	for (auto _ : state) {
 		// clear list
 		while(!list.empty ()) {
-			list.pop_back();
+			auto _ = list.pop();
 		}
 
 		stresser.dispatch ({
@@ -172,6 +174,6 @@ void run_benchmark (benchmark::State & state) {
 #define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
 
 //MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, std::mutex >), "mutex - std::list");
-//MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, spin_mutex >), "spin - std::list");
-MY_BENCHMARK (run_benchmark < lockfree_stack < int > >, "lockfree stack");
+MY_BENCHMARK ((run_benchmark_mutex <std::stack<int>, spin_mutex >), "spin - std::stack");
+MY_BENCHMARK (run_benchmark < lf::stack < int > >, "lockfree stack");
 //MY_BENCHMARK (run_benchmark < demo_b::stack < int > >, "embeded spin stack");

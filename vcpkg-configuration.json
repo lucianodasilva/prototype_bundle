@@ -14,7 +14,7 @@
         {
             "kind": "git",
             "repository": "https://github.com/lucianodasilva/vcpkg-registry",
-            "baseline": "6710b6d20c27632e55ab171086f5ba82c7d5425f",
+            "baseline": "c30947312e946c834c73a35a08f40ee143b16137",
             "packages": [ "las" ]
         }
     ]

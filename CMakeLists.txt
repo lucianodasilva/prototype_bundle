@@ -42,6 +42,7 @@ endif()
 option (build_batch_tester "Build batch testing tool" ON)
 
 option (build_lockfree_stack_run "Build lockfree_stack long running test" ON)
+option (build_pool_allocator_run "Build pool_allocator long running test" ON)
 
 option (build_radix_benchmark "Build radix_benchmark" ON)
 option (build_row_or_column_benchmark "Build row_or_column_benchmark" ON)
@@ -152,4 +153,9 @@ endif()
 if (build_lockfree_stack_run)
     add_executable(lockfree_stack_run lockfree_stack_run.cpp)
     target_link_libraries(lockfree_stack_run PUBLIC las::test)
+endif()
+
+if (build_pool_allocator_run)
+    add_executable(pool_allocator_run pool_allocator.h pool_allocator_run.cpp)
+    target_link_libraries(pool_allocator_run PUBLIC las::test)
 endif()
