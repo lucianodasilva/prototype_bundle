@@ -15,11 +15,62 @@
 #include <thread>
 #include <optional>
 
+#include <cxxopts.hpp>
+
 struct exec_report {
     std::map < int, std::size_t >   exit_code_count;
     std::size_t                     timed_out_count = 0;
     std::chrono::milliseconds       it_runtime_accumulator {};
     std::chrono::milliseconds       runtime {};
+};
+
+struct options {
+
+    static cxxopts::Options make_parser () {
+        auto parser = cxxopts::Options("Batch Tester", "Batch runs a command tracking failure/success rates");
+
+        parser.positional_help ("[command] <args>...");
+        parser.show_positional_help ();
+
+        parser.add_options()
+            ("i,iterations", "Number of times to execute the targeted command", cxxopts::value <uint32_t>()->default_value("1000"))
+            ("t,timeout", "Maximum time an interation is allowed to run, in milliseconds", cxxopts::value<uint32_t>()->default_value("10"))
+            ("command", "Targeted command", cxxopts::value < std::string > ())
+            ("args", "Targeted command arguments", cxxopts::value < std::vector < std::string > > ());
+
+        parser.add_options()
+            ("h,help", "Print Help");
+
+        parser.parse_positional ({"command", "args"});
+
+        return parser;
+    }
+
+    static void print_help () {
+        std::cout << make_parser().help () << std::endl;
+    }
+
+    static options parse (int arg_c, char ** arg_v) {
+        auto const opts = make_parser ().parse (arg_c, arg_v);
+
+        if (opts.count ("command") == 0) {
+            throw std::invalid_argument ("Target command missing");
+        }
+
+        return {
+            /* ARGS       */ (opts.count ("args") != 0 ? opts ["args"].as<std::vector <std::string>>() : std::vector <std::string> ()),
+            /* COMMAND    */ opts ["command"].as<std::string>(),
+            /* TIMEOUT    */ std::chrono::milliseconds(opts ["timeout"].as < uint32_t >()),
+            /* ITERATIONS */ opts ["iterations"].as < uint32_t > (),
+            /* SHOW HELP  */ opts ["help"].as<bool>(),
+        };
+    }
+
+    std::vector < std::string > args;
+    std::string                 command;
+    std::chrono::milliseconds   timeout;
+    uint32_t                    iterations;
+    bool                        show_help;
 };
 
 std::string time_format (std::chrono::milliseconds const TIME) {
@@ -40,8 +91,8 @@ std::string time_format (std::chrono::milliseconds const TIME) {
 
 void dump_report (exec_report const & report, std::size_t iterations) {
     std::cout << "Execution Report:" << std::endl;
-    auto success_it =  report.exit_code_count.find(0);
-    auto success_count = (success_it != report.exit_code_count.end () ? success_it->second : 0);
+    auto const success_it =  report.exit_code_count.find(0);
+    auto const success_count = (success_it != report.exit_code_count.end () ? success_it->second : 0);
 
     std::cout << "Success: " << success_count << std::endl;
     std::cout << "Timed out: " << report.timed_out_count << std::endl;
@@ -141,7 +192,7 @@ void run_monitor (process_handle_t const HANDLE, exec_report & report, std::chro
     ++report.timed_out_count;
 }
 
-std::optional < process_handle_t > run_process (std::filesystem::path const & PATH) {
+std::optional < process_handle_t > run_process (std::string const & command, std::vector < std::string > const & args) {
     pid_t pid = vfork();
 
     if (pid < 0) {
@@ -171,64 +222,67 @@ std::optional < process_handle_t > run_process (std::filesystem::path const & PA
         return std::nullopt;
     }
 
+    // create native args
+    auto native_args = std::make_unique < char * [] > (args.size() + 1);
+
+    for (auto i = 0; i < args.size(); ++i) {
+        native_args [i] = const_cast < char * > (args[i].c_str());
+    }
+
+    native_args[args.size()] = nullptr;
+
     // replace child process with new executable
-    char * NONE = nullptr;
-    execvp (PATH.c_str(), &NONE);
+    execvp (command.c_str (), native_args.get());
     return std::nullopt;
 }
 
 #endif
 
-int main (int const ARG_C, char const ** ARG_V) {
-    auto const START_TIME = std::chrono::system_clock::now();
+int main (int arg_c, char ** arg_v) {
 
-    // get child executable path from command line
-    if (ARG_C != 4) {
-        std::cerr << "Usage: " << ARG_V[0] << " <executable_path> <iterations> <timeout_ms>" << std::endl;
-        return 1;
-    }
-
-    std::filesystem::path executable_path;
-    std::size_t iterations = 0;
-    std::chrono::milliseconds timeout;
+    options opts;
 
     try {
-        executable_path = ARG_V[1];
-        iterations = std::stoul(ARG_V[2]);
-        timeout = std::chrono::milliseconds(std::stoul(ARG_V[3]));
-    } catch (std::exception & e) {
-        std::cerr << "Invalid arguments: " << e.what() << std::endl;
-        return 1;
+        opts = options::parse (arg_c, arg_v);
+    } catch (std::exception & ex) {
+        std::cout << "Invalid command line arguments: " << ex.what ()
+            << std::endl
+            << std::endl;
+
+        options::print_help ();
+        return 0;
     }
 
-    if (!std::filesystem::exists(executable_path)) {
-        std::cerr << "Executable not found: " << executable_path << std::endl;
-        return 1;
+    if (opts.show_help) {
+        options::print_help ();
+        return 0;
     }
+
+    auto const START_TIME = std::chrono::system_clock::now();
 
     // create child process
     exec_report report;
-    auto it_cursor = iterations;
+    auto it_cursor = opts.iterations;
 
     while (it_cursor > 0) {
         auto const START_IT_TIME = std::chrono::system_clock::now();
 
         // parent process
-        auto opt_pid = run_process(executable_path);
+        auto opt_pid = run_process(opts.command, opts.args);
         
         if (!opt_pid) {
-            // run process failed, beter bail out
+            // run process failed, better bail out
             return 1;
         }
 
-        run_monitor(opt_pid.value(), report, timeout);
+        run_monitor(opt_pid.value(), report, opts.timeout);
 
         report.it_runtime_accumulator += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - START_IT_TIME);
         --it_cursor;
     }
 
     report.runtime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - START_TIME);
-    dump_report(report, iterations);
+    dump_report(report, opts.iterations);
 
     return 0;
 }

@@ -62,7 +62,10 @@ find_package(glm CONFIG REQUIRED)
 find_package(las CONFIG REQUIRED)
 
 if (build_batch_tester)
+    find_package (cxxopts REQUIRED)
+
     add_executable(batch_tester batch_tester.cpp)
+    target_link_libraries (batch_tester PUBLIC cxxopts::cxxopts)
 endif()
 
 if (build_radix_benchmark)
