@@ -25,27 +25,6 @@ struct exec_report {
 };
 
 struct options {
-
-    static cxxopts::Options make_parser () {
-        auto parser = cxxopts::Options("Batch Tester", "Batch runs a command tracking failure/success rates");
-
-        parser.positional_help ("[command] <args>...");
-        parser.show_positional_help ();
-
-        parser.add_options()
-            ("i,iterations", "Number of times to execute the targeted command", cxxopts::value <uint32_t>()->default_value("1000"))
-            ("t,timeout", "Maximum time an interation is allowed to run, in milliseconds", cxxopts::value<uint32_t>()->default_value("10"))
-            ("command", "Targeted command", cxxopts::value < std::string > ())
-            ("args", "Targeted command arguments", cxxopts::value < std::vector < std::string > > ());
-
-        parser.add_options()
-            ("h,help", "Print Help");
-
-        parser.parse_positional ({"command", "args"});
-
-        return parser;
-    }
-
     static void print_help () {
         std::cout << make_parser().help () << std::endl;
     }
@@ -71,6 +50,29 @@ struct options {
     std::chrono::milliseconds   timeout;
     uint32_t                    iterations;
     bool                        show_help;
+    bool                        verbose;
+
+private:
+    static cxxopts::Options make_parser () {
+        auto parser = cxxopts::Options("Batch Tester", "Batch runs a command tracking failure/success rates");
+
+        parser.positional_help ("command [args]...");
+        parser.show_positional_help ();
+
+        parser.add_options()
+            ("i,iterations", "Number of times to execute the targeted command", cxxopts::value <uint32_t>()->default_value("1000"))
+            ("t,timeout", "Maximum time an interation is allowed to run, in milliseconds", cxxopts::value<uint32_t>()->default_value("10"))
+            ("v,verbose", "Disable redirection of standard output and standard error")
+            ("command", "Targeted command", cxxopts::value < std::string > ())
+            ("args", "Targeted command arguments", cxxopts::value < std::vector < std::string > > ());
+
+        parser.add_options()
+            ("h,help", "Print Help");
+
+        parser.parse_positional ({"command", "args"});
+
+        return parser;
+    }
 };
 
 std::string time_format (std::chrono::milliseconds const TIME) {
@@ -110,6 +112,10 @@ void dump_report (exec_report const & report, std::size_t iterations) {
 #if defined (_WIN32) || defined (_WIN64)
 
 using process_handle_t = HANDLE;
+
+bool eval_command(std::string const& command) {
+    return std::filesystem::exists(command);
+}
 
 std::optional < process_handle_t > run_process(std::filesystem::path const& PATH) {
     STARTUPINFO si{};
@@ -172,6 +178,7 @@ void run_monitor (process_handle_t const HANDLE, exec_report & report, std::chro
             // child is still running
             std::this_thread::yield();
         } else if (WAIT_RES > 0) {
+
             // child process has exited
             ++report.exit_code_count[status];
             return;
@@ -192,8 +199,23 @@ void run_monitor (process_handle_t const HANDLE, exec_report & report, std::chro
     ++report.timed_out_count;
 }
 
-std::optional < process_handle_t > run_process (std::string const & command, std::vector < std::string > const & args) {
-    pid_t pid = vfork();
+bool eval_command (std::string const & command) {
+    return access(command.c_str(), X_OK) == 0;
+}
+
+std::optional < process_handle_t > run_process (options const & opts) {
+    // create native args
+    auto native_args = std::make_unique < char * [] > (opts.args.size() + 1);
+
+    for (auto i = 0; i < opts.args.size(); ++i) {
+        native_args [i] = const_cast < char * > (opts.args[i].c_str());
+    }
+
+    native_args[opts.args.size()]         = nullptr;
+    constexpr char * const no_env[1] = {nullptr};
+
+    // -- vfork -- avoid stack changes after this point -----------------------------------------
+    auto pid = vfork();
 
     if (pid < 0) {
         std::cerr << "Failed to fork process with error:" << std::to_string(pid) << std::endl;
@@ -202,38 +224,32 @@ std::optional < process_handle_t > run_process (std::string const & command, std
 
     if (pid > 0) {
         // parent process
-        //TODO: report pid
         return pid;
     }
 
-    // child process
+    if (!opts.verbose) {
+        // child process
+        // redirect process output to /dev/null
+        auto const dev_null = ::open("/dev/null", O_WRONLY);
 
-    // redirect process output to /dev/null
-    int dev_null = ::open("/dev/null", O_WRONLY);
+        if (dev_null == -1) {
+            std::cerr << "Failed to open /dev/null" << std::endl;
+            return std::nullopt;
+        }
 
-    if (dev_null == -1) {
-        std::cerr << "Failed to open /dev/null" << std::endl;
-        return std::nullopt;
+        // redirect standard output and standard error to /dev/null
+        if (dup2(dev_null, STDOUT_FILENO) == -1 || dup2(dev_null, STDERR_FILENO) == -1) {
+            std::cerr << "Failed to redirect output" << std::endl;
+            return std::nullopt;
+        }
     }
-
-    // redirect standard output and standard error to /dev/null
-    if (dup2(dev_null, STDOUT_FILENO) == -1 || dup2(dev_null, STDERR_FILENO) == -1) {
-        std::cerr << "Failed to redirect output" << std::endl;
-        return std::nullopt;
-    }
-
-    // create native args
-    auto native_args = std::make_unique < char * [] > (args.size() + 1);
-
-    for (auto i = 0; i < args.size(); ++i) {
-        native_args [i] = const_cast < char * > (args[i].c_str());
-    }
-
-    native_args[args.size()] = nullptr;
 
     // replace child process with new executable
-    execvp (command.c_str (), native_args.get());
-    return std::nullopt;
+    execve (opts.command.c_str (), native_args.get(), no_env);
+
+    // failure to replace process with executable
+    // exit without calling destructors and others to avoid stack corruption on the parent process
+    _exit (1);
 }
 
 #endif
@@ -258,6 +274,10 @@ int main (int arg_c, char ** arg_v) {
         return 0;
     }
 
+    if (!eval_command(opts.command)) {
+        std::cerr << "Command \"" << opts.command << "\" is not valid or not executable" << std::endl;
+    }
+
     auto const START_TIME = std::chrono::system_clock::now();
 
     // create child process
@@ -268,7 +288,7 @@ int main (int arg_c, char ** arg_v) {
         auto const START_IT_TIME = std::chrono::system_clock::now();
 
         // parent process
-        auto opt_pid = run_process(opts.command, opts.args);
+        auto opt_pid = run_process(opts);
         
         if (!opt_pid) {
             // run process failed, better bail out

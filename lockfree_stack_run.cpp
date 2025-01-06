@@ -66,6 +66,8 @@ int main (int const ARG_C, char const * const * ARG_V) {
         return 1;
     }
 
+    std::cout << "Running with " << *OPT_ITER << " iterations" << std::endl;
+
     // test infrastructure
     lf::stack < uint_fast32_t > stack;
     las::test::concurrent_stress_tester stress {};
