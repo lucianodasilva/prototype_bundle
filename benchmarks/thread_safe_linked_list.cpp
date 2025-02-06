@@ -42,68 +42,6 @@ private:
 	std::atomic_bool _lock { false };
 };
 
-namespace demo_b {
-
-	template < typename t >
-	struct stack {
-		using value_type = t;
-
-		stack() = default;
-
-		~stack () {
-			while(!empty()) {
-				pop_back();
-			}
-		}
-
-		[[nodiscard]] bool empty() const {
-			std::lock_guard const LOCK { _mutex };
-			return _head == nullptr;
-		}
-
-		void push_back (value_type const & value) {
-			auto * new_node = new node {
-				nullptr,
-				value };
-
-			{ std::lock_guard const LOCK { _mutex };
-				new_node->next = _head;
-				_head = new_node;
-			}
-		}
-
-		value_type pop_back () {
-			node * old_head;
-
-			{ std::lock_guard const LOCK { _mutex };
-				old_head = _head;
-
-				if (!old_head) {
-					return {};
-				}
-
-				_head = old_head->next;
-			}
-
-			auto value = old_head->value;
-			delete old_head;
-
-			return value;
-		}
-
-	private:
-
-		struct node {
-			node * next;
-			value_type value;
-		};
-
-		node *				_head { nullptr };
-		mutable spin_mutex	_mutex;
-	};
-
-}
-
 template < typename list_t >
 void run_push (list_t & list) {
 	list.push (las::test::uniform(1000));
@@ -174,6 +112,6 @@ void run_benchmark (benchmark::State & state) {
 #define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
 
 //MY_BENCHMARK ((run_benchmark_mutex <std::list <int>, std::mutex >), "mutex - std::list");
-MY_BENCHMARK ((run_benchmark_mutex <std::stack<int>, spin_mutex >), "spin - std::stack");
 MY_BENCHMARK (run_benchmark < lf::stack < int > >, "lockfree stack");
+MY_BENCHMARK ((run_benchmark_mutex <std::stack<int>, spin_mutex >), "spin - std::stack");
 //MY_BENCHMARK (run_benchmark < demo_b::stack < int > >, "embeded spin stack");

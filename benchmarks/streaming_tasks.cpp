@@ -18,10 +18,34 @@
 #define MIN_ITERATION_RANGE (1U << 14U)
 #define MAX_ITERATION_RANGE (1U << 22U)
 
-#define THREAD_COUNT 4
+#define THREAD_COUNT 7
 
 #if defined (__linux)
 #include <pthread.h>
+
+int is_p_core(int cpu_id) {
+	char path[256];
+	char buffer[256];
+	FILE *fp;
+
+	// Check CPU topology through sysfs
+	snprintf(path, sizeof(path),
+			 "/sys/devices/system/cpu/cpu%d/topology/core_type", cpu_id);
+
+	fp = fopen(path, "r");
+	if (!fp) return -1; // Error reading
+
+	if (fgets(buffer, sizeof(buffer), fp) != NULL) {
+		fclose(fp);
+		// On hybrid architectures, typically:
+		// 0 = P-core
+		// 1 = E-core
+		return (atoi(buffer) == 0);
+	}
+
+	fclose(fp);
+	return -1;
+}
 
 std::vector < std::size_t > get_physical_cores () {
     std::vector < std::size_t > physical_cores;
@@ -29,27 +53,8 @@ std::vector < std::size_t > get_physical_cores () {
     auto core_count = std::thread::hardware_concurrency();
 
     for (std::size_t i = 0; i < core_count; ++i) {
-        auto path = std::filesystem::path ("/sys/devices/system/cpu/cpu"+ std::to_string (i) + "/topology/thread_siblings_list");
-
-        if (std::filesystem::exists(path)) {
-            std::ifstream filestream (path, std::ios::binary);
-
-            if (!filestream) {
-                continue;
-            }
-
-            std::string content(std::istreambuf_iterator<char>{filestream}, {});
-            auto it = std::find (content.begin(), content.end (), ',');
-
-            if (it == content.end ()) {
-                break;
-            }
-
-            auto id = std::stoul(std::string (content.begin (), it));
-
-            if (i == id) {
-                physical_cores.push_back (i);
-            }
+        if (is_p_core) {
+            physical_cores.push_back (i);
         }
     }
 

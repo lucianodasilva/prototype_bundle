@@ -42,7 +42,6 @@ endif()
 option (build_batch_tester "Build batch testing tool" ON)
 
 option (build_lockfree_stack_run "Build lockfree_stack long running test" ON)
-option (build_pool_allocator_run "Build pool_allocator long running test" ON)
 
 option (build_disk_io_benchmark "Build disk_io_benchmark" ON)
 option (build_radix_benchmark "Build radix_benchmark" ON)
@@ -58,6 +57,7 @@ option (build_thread_safe_linked_list "build thread safe linked list benchmark" 
 option (build_thread_local_vs_others "build thread local vs others benchmark" ON)
 option (build_streaming_math "build streaming math benchmark" ON)
 option (build_tracing_ptr "build tracing ptr benchmark" ON)
+option (build_proto_gc "build prototype garbage collection" ON)
 
 find_package(benchmark CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
@@ -71,7 +71,11 @@ endif()
 if (build_batch_tester)
     find_package (cxxopts REQUIRED)
 
-    add_executable(batch_tester batch_tester.cpp)
+    add_executable(batch_tester batch_tester.cpp
+            proto-gc/main.cpp
+            proto-gc/collector.h
+            proto-gc/collector.cpp
+            proto-gc/atomics.h)
     target_link_libraries (batch_tester PUBLIC cxxopts::cxxopts)
 endif()
 
@@ -171,7 +175,14 @@ if (build_lockfree_stack_run)
     target_link_libraries(lockfree_stack_run PUBLIC las::test)
 endif()
 
-if (build_pool_allocator_run)
-    add_executable(pool_allocator_run pool_allocator.h pool_allocator_run.cpp)
-    target_link_libraries(pool_allocator_run PUBLIC las::test)
+if (build_proto_gc)
+    add_executable (proto_gc
+            proto-gc/main.cpp
+            proto-gc/atomics.h
+            proto-gc/collector.h
+            proto-gc/collector.cpp)
+
+    target_include_directories (proto_gc PRIVATE proto-gc/)
+
+    target_link_libraries (proto_gc PRIVATE las::las)
 endif()
