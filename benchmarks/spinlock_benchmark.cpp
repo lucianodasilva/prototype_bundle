@@ -49,6 +49,70 @@ namespace demo_b {
     private:
         std::atomic_flag _flag = ATOMIC_FLAG_INIT;
     };
+
+
+    struct shared_spin_mutex {
+    public:
+
+        void lock() {
+            for (;;) {
+                // Optimistically assume the lock is free on the first try
+                if (intptr_t expected = 0; !_flag.compare_exchange_weak(expected, -1, std::memory_order_acquire)) {
+                    return;
+                }
+
+                // Wait for lock to be released without generating cache misses
+                while (_flag.load(std::memory_order_relaxed) != 0) {
+                    _mm_pause();
+                }
+            }
+        }
+
+        /// tries to lock the mutex
+        /// \return true if the lock was acquired, false otherwise
+        [[nodiscard]] bool try_lock() noexcept {
+            intptr_t expected = 0;
+            return _flag.compare_exchange_weak(expected, -1, std::memory_order_acquire);
+        }
+
+        /// unlocks the mutex
+        void unlock() noexcept {
+            intptr_t expected = -1;
+            _flag.compare_exchange_weak(expected, 0, std::memory_order_release);
+        }
+
+        void shared_lock () {
+            for (;;) {
+                intptr_t expected = _flag.load (std::memory_order_relaxed);
+
+                if (expected >= 0 && _flag.compare_exchange_weak (expected, expected + 1, std::memory_order_acquire)) {
+                    return;
+                }
+
+                // Wait for lock to be released without generating cache misses
+                while (_flag.load(std::memory_order_relaxed) < 0) {
+                    _mm_pause();
+                }
+            }
+        }
+
+        void shared_unlock () {
+            for (;;) {
+                intptr_t expected = _flag.load (std::memory_order_relaxed);
+
+                if (expected <= 0) {
+                    return;
+                }
+
+                if (expected > 0 && _flag.compare_exchange_weak (expected, expected - 1, std::memory_order_acquire)) {
+                    return;
+                }
+            }
+        }
+
+    private:
+        std::atomic_intptr_t _flag {0};
+    };
 }
 
 namespace demo_c {

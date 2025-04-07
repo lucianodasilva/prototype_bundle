@@ -18,6 +18,7 @@ endmacro()
 include_directories (${CMAKE_CURRENT_LIST_DIR})
 
 set(CMAKE_CXX_STANDARD 17)
+
 # Test LTO
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
@@ -38,8 +39,6 @@ option (build_console_input "Build console_input" ON)
 if (build_console_input)
     add_executable(console_input console_input.cpp)
 endif()
-
-option (build_batch_tester "Build batch testing tool" ON)
 
 option (build_lockfree_stack_run "Build lockfree_stack long running test" ON)
 
@@ -63,20 +62,19 @@ find_package(benchmark CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(las CONFIG REQUIRED)
 
+get_property(las_batch_file TARGET las::batch PROPERTY LOCATION)
+message (STATUS "LAS-BATCH PATH: ${las_batch_file}")
+
+add_custom_command (
+    OUTPUT ${CMAKE_BINARY_DIR}/las-batch
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:las::batch> ${CMAKE_BINARY_DIR}/las-batch
+    DEPENDS las::batch
+    COMMENT "Copying las::batch to ${CMAKE_BINARY_DIR}"
+)
+
 if (build_disk_io_benchmark)
     add_executable(disk_io_benchmark benchmarks/disk_io_benchmark.cpp)
     target_link_libraries (disk_io_benchmark PUBLIC las::las)
-endif()
-
-if (build_batch_tester)
-    find_package (cxxopts REQUIRED)
-
-    add_executable(batch_tester batch_tester.cpp
-            proto-gc/main.cpp
-            proto-gc/collector.h
-            proto-gc/collector.cpp
-            proto-gc/atomics.h)
-    target_link_libraries (batch_tester PUBLIC cxxopts::cxxopts)
 endif()
 
 if (build_radix_benchmark)

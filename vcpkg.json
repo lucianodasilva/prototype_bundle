@@ -1,5 +1,13 @@
 {
   "name" : "prototype-bundle",
   "version-string" : "1.0.0",
-  "dependencies" : [ "benchmark", "glm", "las", "cxxopts" ]
+  "dependencies" : [
+    "benchmark",
+    "glm",
+    "cxxopts",
+    {
+      "name": "las",
+      "features": [ "batch" ]
+    }
+  ]
 }
