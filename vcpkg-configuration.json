@@ -2,7 +2,7 @@
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg-configuration.schema.json",
     "default-registry": {
         "kind": "git",
-        "baseline": "3c76dc55f8bd2b7f4824bcd860055094bfbbb9ea",
+        "baseline": "b2012a0b9df97aafde760c422223c6a4254d34c7",
         "repository": "https://github.com/microsoft/vcpkg"
     },
     "registries": [
@@ -14,7 +14,7 @@
         {
             "kind": "git",
             "repository": "https://github.com/lucianodasilva/vcpkg-registry",
-            "baseline": "c6d99268db11427502a31e75985994ac6074313c",
+            "baseline": "da6a400b54ee2e19a2f28e03f7f8358d38713c5a",
             "packages": [ "las" ]
         }
     ]

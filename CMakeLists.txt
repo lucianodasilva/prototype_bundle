@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.9)
+cmake_minimum_required(VERSION 3.30)
 project(prototype_bundle)
 
 macro (append_source path out)
@@ -57,6 +57,9 @@ option (build_thread_local_vs_others "build thread local vs others benchmark" ON
 option (build_streaming_math "build streaming math benchmark" ON)
 option (build_tracing_ptr "build tracing ptr benchmark" ON)
 option (build_proto_gc "build prototype garbage collection" ON)
+option (build_binalloc "build binalloc" ON)
+
+option (bench_profile "build for profiling" OFF)
 
 find_package(benchmark CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
@@ -111,25 +114,6 @@ if (build_streaming_tasks)
 	target_include_directories (streaming_tasks PUBLIC ${CMAKE_CURRENT_LIST_DIR}/extras/glm.git)
 
 	target_link_libraries (streaming_tasks PUBLIC benchmark::benchmark benchmark::benchmark_main glm::glm)
-
-    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-        target_compile_options(streaming_tasks PUBLIC
-                 $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
-    endif()
-
-    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-        message ("Enabling thread sanitizer for Release build")
-
-        target_compile_options(streaming_tasks PUBLIC
-                $<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
-    endif()
-
-    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-        target_compile_options(streaming_tasks PUBLIC
-                $<$<CONFIG:Release>:/Z7> )
-
-        set_target_properties (streaming_tasks PROPERTIES LINK_FLAGS "/PROFILE")
-    endif()
 endif()
 
 if (build_copy_benchmark)
@@ -173,14 +157,43 @@ if (build_lockfree_stack_run)
     target_link_libraries(lockfree_stack_run PUBLIC las::test)
 endif()
 
-if (build_proto_gc)
-    add_executable (proto_gc
-            proto-gc/main.cpp
-            proto-gc/atomics.h
-            proto-gc/collector.h
-            proto-gc/collector.cpp)
+if (build_binalloc)
+    add_executable(binalloc
+            benchmarks/binalloc/bin.cpp
+            benchmarks/binalloc/bin.h
+            benchmarks/binalloc/config.cpp
+            benchmarks/binalloc/config.h
+            benchmarks/binalloc/main.cpp
+            benchmarks/binalloc/page.cpp
+            benchmarks/binalloc/page.h
+            benchmarks/binalloc/slab.cpp
+            benchmarks/binalloc/slab.h
+            benchmarks/binalloc/stack.h
+            benchmarks/binalloc/utils.cpp
+            benchmarks/binalloc/utils.h)
 
-    target_include_directories (proto_gc PRIVATE proto-gc/)
+    target_link_libraries(binalloc PUBLIC benchmark::benchmark benchmark::benchmark_main las::test)
 
-    target_link_libraries (proto_gc PRIVATE las::las)
+    set_target_properties(binalloc PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+
+endif()
+
+if (bench_profile)
+
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+        add_compile_options($<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
+    endif()
+
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+        add_compile_options($<$<CONFIG:Release>:-fno-omit-frame-pointer -g>)
+    endif()
+
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+        add_compile_options($<$<CONFIG:Release>:/Z7> )
+        list(APPEND CMAKE_CXX_LINK_FLAGS "/PROFILE")
+    endif()
+
 endif()

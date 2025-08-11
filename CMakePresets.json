@@ -21,6 +21,15 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "profiling",
+            "description": "Profile build",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "bench_profile": true
+            }
         }
     ]
 }

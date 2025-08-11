@@ -1,0 +1,12 @@
+Checks:
+    bugprone-*,
+    cert-*,
+    concurrency-*,
+    cppcoreguidelines-*,
+    hicpp-*,
+    misc-*,
+    -misc-non-private-member-variables-in-classes, # Exclude this check to allow public member variables in classes
+    modernize-*,
+    -modernize-use-trailing-return-type, # Do not enforce trailing return types
+    performance-*,
+    readability-*
