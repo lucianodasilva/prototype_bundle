@@ -7,9 +7,9 @@
 
 namespace sgc2 {
 
-    page::header::header(std::size_t const block_size, block *free_stack_head) :
+    page::header::header(std::size_t const block_bin, block *free_stack_head) :
         free_stack(free_stack_head),
-        block_size(block_size) {}
+        block_bin(block_bin) {}
 
     page *page::header::page() {
         return slab_address_table::from(this).page_ptr;

@@ -25,7 +25,7 @@ namespace sgc2 {
 
         static slab * reserve ();
 
-        page::header * alloc (std::size_t size);
+        page::header * alloc (std::size_t bin_index);
         void free (page::header * header);
 
         slab * next {nullptr}; // pointer to the next slab in the stack
@@ -36,7 +36,7 @@ namespace sgc2 {
     };
 
     namespace slab_stack {
-        page::header * alloc (std::size_t size);
+        page::header * alloc (std::size_t bin_index);
         void free (page::header * header);
 
         static std::atomic < slab * > free_stack;

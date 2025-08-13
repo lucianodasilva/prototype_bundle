@@ -2,28 +2,26 @@
 #ifndef BINALLOC_CONFIG_H
 #define BINALLOC_CONFIG_H
 
-#include <cstddef>
+#include <cstdint>
 
 namespace sgc2 {
 
-    constexpr std::size_t page_header_size = 32; // TODO: arbitrary. Perhaps if compiled for 32 bits, it can be made smaller
+    struct config_t {
+        explicit config_t (std::uint32_t page_size);
 
-    /// Number of pages in a slab
-    extern std::size_t const slab_page_count;
+        std::uint32_t page_size;            ///< System memory page size in bytes
+        std::uint32_t page_header_size;     ///< Page header reserved size in bytes
+        std::uint32_t page_min_block_size;  ///< Minimum allocatable block size in bytes
+        std::uint32_t page_max_block_size;  ///< Maximum allocatable block size in bytes
 
-    /// Size of a slab in bytes
-    extern std::size_t const slab_size;
+        std::uint32_t slab_page_count;      ///< Number of pages in a slab
+        std::uint32_t slab_size;            ///< Slab size in bytes
 
-    /// Minimum size of a bin
-    constexpr std::size_t page_min_block_size = 24; // TODO: this is arbitrary. Try to figure out something based on the total page size
+        std::uint32_t bin_count;            ///< Number of bins in a thread local bin storage
+    };
 
-    /// Maximum size for page blocks
-    extern std::size_t const page_max_block_size;
-
-    /// Number of bins per thread local allocator
-    extern std::size_t const bin_count;
-
-
+    /// Returns allocator runtime configuration values
+    config_t const & config();
 
 }
 

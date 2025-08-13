@@ -113,7 +113,8 @@ void alloc_benchmark(benchmark::State &state) {
 
         auto test = [&] {
             auto i     = index.fetch_add(1, std::memory_order::relaxed);
-            objects[i] = std::bit_cast<std::byte *>(alloc_t::alloc(las::test::uniform(8, 1024)));
+            auto size = las::test::uniform(8, 1024);
+            objects[i] = std::bit_cast<std::byte *>(alloc_t::alloc(size));
         };
 
         state.ResumeTiming();

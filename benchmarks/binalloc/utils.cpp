@@ -5,18 +5,17 @@
 #include <sys/mman.h>
 
 namespace sgc2 {
-
-    size_t const page_size = [] {
-        static auto const size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
-        return size * 8; // let's make it a "software" large page of sorts
-    }();
+    size_t system_page_size (){
+        static const auto size = getpagesize();
+        return size;
+    };
 
     std::byte *reserve(size_t size, size_t alignment) {
         if(!alignment) {
-            alignment = page_size;
+            alignment = system_page_size();
         }
 
-        size_t padded_size = size + (alignment - page_size);
+        size_t padded_size = size + (alignment - system_page_size());
 
         auto *address = static_cast<std::byte *>(
             mmap(
@@ -27,9 +26,8 @@ namespace sgc2 {
                     -1,
                     0));
 
-        if(!address) {
+        if(!address)
             return nullptr;
-        }
 
         // align address
         auto *const aligned_address = align_up(address, alignment);
@@ -73,23 +71,23 @@ namespace sgc2 {
 #include <Windows.h>
 
 namespace sgc {
-    std::size_t page_size() {
+    std::size_t system_page_size (){
         static auto const size =
-                [] -> std::size_t {
-                    SYSTEM_INFO info;
-                    GetSystemInfo(&info);
-                    return info.dwPageSize;
-                }()
+            [] -> std::size_t {
+                SYSTEM_INFO info;
+                GetSystemInfo(&info);
+                return info.dwPageSize;
+            }()
 
         return size;
     };
 
     std::byte *reserve(size_t size, size_t alignment) {
         if(alignment == 0)
-            alignment = page_size;
+            alignment = system_page_size();
 
         auto aligned_size =
-                size + (alignment - page_size);
+                size + (alignment - system_page_size());
 
         std::byte *address{nullptr};
         uint8_t    retry{255};

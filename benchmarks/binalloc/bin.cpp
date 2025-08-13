@@ -7,8 +7,8 @@
 namespace sgc2 {
 
     bin_store::bin_store() :
-        _bins(std::make_unique<page::header *[]>(bin_count)) {
-        std::fill_n(_bins.get(), bin_count, nullptr);
+        _bins(std::make_unique<page::header *[]>(config().bin_count)) {
+        std::fill_n(_bins.get(), config().bin_count, nullptr);
     }
 
     void *bin_store::alloc(size_t size) {
@@ -26,7 +26,7 @@ namespace sgc2 {
             // remove existing head since it is full (nothing happens if it's already empty)
             stack::pop(_bins[index]);
 
-            header = slab_stack::alloc(size);
+            header = slab_stack::alloc(index);
 
             if(!header) [[unlikely]] {
                 return nullptr; // slab page allocation failed, nothing to do
@@ -49,8 +49,9 @@ namespace sgc2 {
 
         if(page_was_full) [[unlikely]] {
             // if the page was full, we need to add it back to the bin stack
-            auto const index = bin_index(header->block_size);
-            stack::push(_bins[index], header);
+            stack::push(
+                _bins[header->block_bin],
+                header);
         }
     }
 
@@ -59,16 +60,20 @@ namespace sgc2 {
         return store;
     }
 
-    constexpr std::size_t bin_store::bin_index(std::size_t size) {
-        if(size == 0 || size > page_max_block_size) [[unlikely]] {
+    std::size_t bin_store::bin_index(std::size_t size) {
+        if(size == 0 || size > config().page_max_block_size) [[unlikely]] {
             return NO_BIN_INDEX; // overflow, signal that size is too large
         }
 
-        if(size < page_min_block_size) [[unlikely]] {
+        if(size < config().page_min_block_size) [[unlikely]] {
             return 0; // underflow, return the first bin
         }
 
-        return (size - page_min_block_size) / page_min_block_size;
+        return (size - config().page_min_block_size) / config().page_min_block_size;
+    }
+
+    std::size_t bin_store::bin_index_max_size(std::size_t index) {
+        return config().page_min_block_size + (index * sizeof (uintptr_t));
     }
 
 } // namespace sgc2

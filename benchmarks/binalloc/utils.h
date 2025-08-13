@@ -127,7 +127,7 @@ namespace sgc2 {
     /// page size in bytes
     /// \note This is the size of a memory page on the system, used for memory
     ///       allocation and deallocation. It is typically 4KB on most systems.
-    extern std::size_t const page_size;
+    std::size_t system_page_size();
 
     /// Reserve a memory region of the given size and alignment
     std::byte *reserve(std::size_t size, std::size_t alignment);

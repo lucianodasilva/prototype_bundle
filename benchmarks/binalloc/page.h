@@ -26,10 +26,11 @@ namespace sgc2 {
 
             header *             next{nullptr}; // pointer to the next page header in the slab
             std::atomic<block *> free_stack; // pointer to the first free block in this page
-            std::size_t const    block_size; // the size of the blocks in this page
+            std::size_t const    block_bin; // what bin index does this block bellong to
         };
 
-        static_assert (sizeof (page::header) <= page_header_size, "Page header too large to fit in allowed max size");
+        // -- cannot do static asserts --
+        // static_assert (sizeof (page::header) <= config().page_size, "Page header too large to fit in allowed max size");
     };
 
 }

@@ -4,10 +4,18 @@
 
 namespace sgc2 {
 
-    std::size_t const slab_page_count = page_size / page_header_size - 1;
-    std::size_t const slab_size       = (slab_page_count + 1 /* take into account the header map */) * page_size;
+    config_t::config_t(std::uint32_t const page_size) :
+        page_size{page_size},
+        page_header_size{32},                               // Arbitrary value. Perhaps a relation between arch size and header size can be found
+        page_min_block_size{24},                            // Arbitrary value. Changing page alloc type can change this
+        page_max_block_size{page_size / 4},                 // Also arbitrary although may be reasonable
+        slab_page_count{page_size / page_header_size - 1},
+        slab_size{(slab_page_count + 1) * page_size},
+        bin_count{static_cast<std::uint32_t>((page_max_block_size - page_min_block_size) / sizeof(uintptr_t))} {}
 
-    std::size_t const page_max_block_size = page_size / 4;
-    std::size_t const bin_count           = (page_max_block_size - page_min_block_size) / sizeof(uintptr_t);
+    config_t const &config() {
+        static auto const inst = config_t{static_cast<std::uint32_t>(system_page_size())};
+        return inst;
+    }
 
 }
