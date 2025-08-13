@@ -166,8 +166,8 @@ namespace demo_futex {
                 }
 
                 // try and relock on futex awake
-                while (_flag.atomic.load(std::memory_order_relaxed) == 1) {
-                    las::futex_wait(&_flag.integer, 1);
+                while (las::futex_wait(&_flag.integer, 1) != las::futex_wait_result::awake) {
+                    _mm_pause();
                 }
             }
         }
@@ -243,5 +243,5 @@ void run_benchmark (benchmark::State& state) {
 #define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
 
 MY_BENCHMARK(run_benchmark < std::mutex >, "mutex - baseline");
-MY_BENCHMARK(run_benchmark < demo_b::spin_mutex >, "spin (expert)");
+MY_BENCHMARK(run_benchmark < demo_c::spin_mutex >, "spin (expert)");
 MY_BENCHMARK(run_benchmark < demo_futex::futex >, "futex");

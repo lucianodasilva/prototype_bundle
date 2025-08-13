@@ -47,7 +47,7 @@ namespace sgc2 {
         }
 
         // commit the first page to the slab for the page header data
-        if(!commit(address, config().page_size)) [[unlikely]] {
+        if(!commit(address, config().slab_size)) [[unlikely]] {
             return nullptr;
         }
 
@@ -64,11 +64,11 @@ namespace sgc2 {
         auto *page = header->page();
 
         // really allocate the page
-        if(!commit(page->address(), config().page_size)) [[unlikely]] {
-            // don't know what good it will do after failing to commit, but at least tries to keep this thing stable
-            stack::atomic_push(free_stack, header);
-            return nullptr;
-        }
+        //if(!commit(page->address(), config().page_size)) [[unlikely]] {
+        //    // don't know what good it will do after failing to commit, but at least tries to keep this thing stable
+        //    stack::atomic_push(free_stack, header);
+        //    return nullptr;
+        //}
 
         // initialize blocks and return
         return new(header) page::header(

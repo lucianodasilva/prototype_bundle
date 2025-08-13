@@ -5,8 +5,10 @@
 #include <atomic>
 #include <bit>
 #include <cstdint>
+#include <cmath>
 #include <type_traits>
 #include <xmmintrin.h>
+#include <x86intrin.h>
 
 namespace sgc2 {
 
@@ -54,6 +56,18 @@ namespace sgc2 {
     constexpr bool is_pow_2(value_t num) {
         static_assert(std::is_unsigned_v<value_t>, "is_pow_2 does not support signed data types!");
         return (num & (num - 1)) == 0;
+    }
+
+    template<typename value_t>
+    constexpr value_t next_pow_2(value_t num) {
+        static_assert(std::is_unsigned_v<value_t>, "next_pow_2 does not support signed data types!");
+
+        if(!is_pow_2(num)) {
+            auto const index = _bit_scan_reverse(num);
+            num        = 1 << (index + 1);
+        }
+
+        return num;
     }
 
     /// check if value is a multiple of another value
@@ -114,13 +128,19 @@ namespace sgc2 {
                 (std::bit_cast<std::uintptr_t>(address) + alignment) & alignment_mask);
     }
 
+    constexpr uint32_t count_powers_of_two(std::uint32_t const lhv, std::uint32_t const rhv) {
+        auto const start = std::ceil(std::log2(lhv));
+        auto const end = std::floor(std::log2(rhv));
+        return (end >= start) ? (end - start + 1) : 0;
+    }
+
     /// get the address as a pointer to std::byte
-    inline std::byte *as_ptr(std::uintptr_t address) noexcept {
+    inline std::byte *as_ptr(std::uintptr_t const address) noexcept {
         return std::bit_cast<std::byte *>(address);
     }
 
     /// get the address as an integer
-    inline std::uintptr_t as_int(std::byte *address) noexcept {
+    inline std::uintptr_t as_int(std::byte * const address) noexcept {
         return std::bit_cast<std::uintptr_t>(address);
     }
 

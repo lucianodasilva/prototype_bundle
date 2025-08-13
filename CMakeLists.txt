@@ -58,6 +58,7 @@ option (build_streaming_math "build streaming math benchmark" ON)
 option (build_tracing_ptr "build tracing ptr benchmark" ON)
 option (build_proto_gc "build prototype garbage collection" ON)
 option (build_binalloc "build binalloc" ON)
+option (build_bitmap_vs_stack "build binalloc" ON)
 
 option (bench_profile "build for profiling" OFF)
 
@@ -159,6 +160,7 @@ endif()
 
 if (build_binalloc)
     add_executable(binalloc
+            benchmarks/binalloc/basic_alloc.h
             benchmarks/binalloc/bin.cpp
             benchmarks/binalloc/bin.h
             benchmarks/binalloc/config.cpp
@@ -179,6 +181,13 @@ if (build_binalloc)
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF)
 
+endif()
+
+if (build_bitmap_vs_stack)
+    add_executable(bitmap_vs_stack
+            benchmarks/bitmap_vs_atomic_stack.cpp)
+
+    target_link_libraries(bitmap_vs_stack PUBLIC benchmark::benchmark benchmark::benchmark_main las::test)
 endif()
 
 if (bench_profile)

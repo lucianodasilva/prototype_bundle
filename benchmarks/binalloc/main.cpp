@@ -177,14 +177,13 @@ void free_benchmark(benchmark::State &state) {
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 #define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
+MY_BENCHMARK(mixed_benchmark< system_alloc >, "malloc - mixed baseline");
+MY_BENCHMARK(mixed_benchmark< sgc2_alloc >, "sgc2 - mixed");
 
-//MY_BENCHMARK(mixed_benchmark< system_alloc >, "malloc - mixed baseline");
-//MY_BENCHMARK(mixed_benchmark< sgc2_alloc >, "sgc2 - mixed");
-
-//MY_BENCHMARK(alloc_benchmark< system_alloc >, "malloc - alloc baseline");
+MY_BENCHMARK(alloc_benchmark< system_alloc >, "malloc - alloc baseline");
 MY_BENCHMARK(alloc_benchmark< sgc2_alloc >, "sgc2 - alloc");
 
-//MY_BENCHMARK(free_benchmark< system_alloc >, "malloc - free baseline");
-//MY_BENCHMARK(free_benchmark< sgc2_alloc >, "sgc2 - free");
+// MY_BENCHMARK(free_benchmark< system_alloc >, "malloc - free baseline");
+// MY_BENCHMARK(free_benchmark< sgc2_alloc >, "sgc2 - free");
 
 BENCHMARK_MAIN();

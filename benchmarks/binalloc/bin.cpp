@@ -1,5 +1,7 @@
 #include "bin.h"
 
+#include <las/bits.hpp>
+
 #include "config.h"
 #include "slab.h"
 #include "stack.h"
@@ -69,11 +71,17 @@ namespace sgc2 {
             return 0; // underflow, return the first bin
         }
 
-        return (size - config().page_min_block_size) / config().page_min_block_size;
+        auto bit_index = _bit_scan_reverse(size);
+
+        if (!is_pow_2(size)) {
+            ++bit_index;
+        }
+
+        return bit_index - 3; // TODO: precalculate and cache this
     }
 
     std::size_t bin_store::bin_index_max_size(std::size_t index) {
-        return config().page_min_block_size + (index * sizeof (uintptr_t));
+        return 1 << (index + 3); // TODO: precalculate and cache this
     }
 
 } // namespace sgc2
