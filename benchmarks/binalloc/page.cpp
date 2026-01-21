@@ -1,27 +1,76 @@
 #include "page.h"
 
+#include <mutex>
 #include <stdexcept>
 
-#include "slab.h"
+#include "cluster.h"
+#include "page_cache.h"
 #include "stack.h"
 
 namespace sgc2 {
 
-    page::header::header(std::size_t const block_bin, block *free_stack_head) :
-        free_stack(free_stack_head),
-        block_bin(block_bin) {}
-
-    page *page::header::page() {
-        return slab_address_table::from(this).page_ptr;
+    unique_spin_lock page_meta::lock() {
+        return unique_spin_lock(mutex);
     }
 
-    void *page::header::alloc() {
-        return stack::atomic_pop(free_stack);
+    void page_meta::transfer_to(link *&head) {
+        auto lock_guard = lock();
+
+        // transfer available objets to external cache
+        head      = free_list;
+        free_list = nullptr;
+
+        // set page state to untethered
+        used        = config().bin_object_count(bin_index);
+        is_tethered = false;
     }
 
-    void page::header::free(void *address) {
-        stack::atomic_push(free_stack, std::bit_cast<block *>(address));
+    void page_meta::free(address_t const address) {
+        auto        lock_guard = lock();
+        auto *const item       = std::bit_cast<link *>(address);
+
+        // push to free list
+        item->next = free_list;
+        free_list  = item;
+
+        // handle page integrity
+         --used;
+
+        if(!is_tethered) [[unlikely]] {
+            page_cache_return(this);
+            is_tethered = true;
+        }
+
+        if(used == 0) [[unlikely]] {
+            page_cache_release(this);
+        }
     }
 
+    page_meta *page_meta::make(address_t const address, uint8_t const bin_index) {
+        auto const &cfg       = config();
+        auto const  addr_meta = address_meta(address);
 
+        if(bin_index >= cfg.bin_count) {
+            throw std::invalid_argument("Invalid bin index");
+        }
+
+        auto const page_data = std::span(
+                as_ptr (addr_meta.page),
+                cfg.page_size);
+
+        return new(std::bit_cast<void *>(address)) page_meta{
+                .free_list = stack::format_stack<link>(
+                        page_data,
+                        cfg.bin_index_max_size(bin_index)),
+                .bin_index = bin_index
+        };
+    }
+
+    page_meta *page_meta::owning(address_t const address) {
+        return std::bit_cast<page_meta *>(address_meta(address).page_meta);
+    }
+
+    address_t page_meta::page() const {
+        return address_meta(this).page;
+    }
 }

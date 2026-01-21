@@ -755,8 +755,6 @@ void gc_alloc_assign(benchmark::State &state) {
 	}
 }
 
-//BENCHMARK(gc_alloc_assign)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
-
 void gc_collect(benchmark::State &state) {
 	gc::tracker::instance().register_collector_thread();
 
@@ -775,8 +773,6 @@ void gc_collect(benchmark::State &state) {
 		gc::tracker::instance().collect();
 	}
 }
-
-//BENCHMARK(gc_collect)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 struct no_gc_demo {
 	uint8_t xxx[object_size];
@@ -806,8 +802,6 @@ void no_gc_baseline_alloc(benchmark::State &state) {
 	}
 }
 
-//BENCHMARK(no_gc_baseline_alloc)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
-
 void no_gc_baseline_collect(benchmark::State &state) {
 
 	std::vector<std::unique_ptr<no_gc_demo> > recovery;
@@ -828,8 +822,6 @@ void no_gc_baseline_collect(benchmark::State &state) {
 		recovery.clear();
 	}
 }
-
-//BENCHMARK(no_gc_baseline_collect)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 void shared_ptr_alloc_baseline(benchmark::State &state) {
 
@@ -854,8 +846,6 @@ void shared_ptr_alloc_baseline(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(shared_ptr_alloc_baseline)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
-
 void shared_ptr_collect_baseline(benchmark::State &state) {
 
 	std::vector<std::shared_ptr<no_gc_demo> > recovery;
@@ -878,8 +868,6 @@ void shared_ptr_collect_baseline(benchmark::State &state) {
 		recovery.clear();
 	}
 }
-
-BENCHMARK(shared_ptr_collect_baseline)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
 
 struct demo2 {
 	uint8_t xxx[object_size];
@@ -904,8 +892,6 @@ void gc2_alloc_assign(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(gc2_alloc_assign)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
-
 void gc2_collect(benchmark::State &state) {
 	gc2::tracker::instance().register_collector_thread();
 
@@ -925,4 +911,12 @@ void gc2_collect(benchmark::State &state) {
 	}
 }
 
-BENCHMARK(gc2_collect)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond);
+#define GC_BENCHMARK(func) BENCHMARK(func)->Range(1 << 8, 1 << 18)->Unit(benchmark::TimeUnit::kMillisecond)
+//GC_BENCHMARK(no_gc_baseline_alloc);
+//GC_BENCHMARK(no_gc_baseline_collect);
+//GC_BENCHMARK(shared_ptr_alloc_baseline);
+//GC_BENCHMARK(shared_ptr_collect_baseline);
+GC_BENCHMARK(gc_alloc_assign);
+GC_BENCHMARK(gc_collect);
+//GC_BENCHMARK(gc2_alloc_assign);
+//GC_BENCHMARK(gc2_collect);

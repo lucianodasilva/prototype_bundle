@@ -10,14 +10,14 @@ namespace sgc2 {
         return size;
     };
 
-    std::byte *reserve(size_t size, size_t alignment) {
+    std::byte * reserve(size_t size, size_t alignment) {
         if(!alignment) {
             alignment = system_page_size();
         }
 
         size_t padded_size = size + (alignment - system_page_size());
 
-        auto *address = static_cast<std::byte *>(
+        auto address = std::bit_cast <std::byte *>(
             mmap(
                     nullptr,
                     padded_size,

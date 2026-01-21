@@ -2,35 +2,37 @@
 #ifndef BINALLOC_PAGE_H
 #define BINALLOC_PAGE_H
 
-#include <bit>
+#include <span>
 
 #include "config.h"
 #include "utils.h"
 
 namespace sgc2 {
 
-    struct page : addressable {
+    struct page_meta {
+        [[nodiscard]] constexpr bool is_unused() const noexcept {
+            return used == 0;
+        }
 
-        struct block : addressable {
-            block *next;
-        };
+        unique_spin_lock lock();
 
-        struct header : addressable {
-            explicit header(std::size_t block_size, block *free_stack_head);
+        void transfer_to(link *&head);
 
-            [[nodiscard]] sgc2::page *page();
+        void free(address_t address);
 
-            void *alloc();
+        static page_meta *make(address_t address, uint8_t bin_index);
 
-            void free(void *address);
+        static page_meta *owning(address_t address);
 
-            header *             next{nullptr}; // pointer to the next page header in the slab
-            std::atomic<block *> free_stack; // pointer to the first free block in this page
-            std::size_t const    block_bin; // what bin index does this block bellong to
-        };
+        address_t page() const;
 
-        // -- cannot do static asserts --
-        // static_assert (sizeof (page::header) <= config().page_size, "Page header too large to fit in allowed max size");
+        page_meta *   next{nullptr};
+        page_meta *   prev{nullptr};
+        link *        free_list{nullptr};
+        uint16_t      used{0};
+        uint8_t const bin_index{0};
+        spin_mutex    mutex{};
+        bool          is_tethered{true};
     };
 
 }

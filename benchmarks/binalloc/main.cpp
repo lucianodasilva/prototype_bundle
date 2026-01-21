@@ -2,7 +2,7 @@
 #include <benchmark/benchmark.h>
 #include <bits/atomic_base.h>
 
-#include "bin.h"
+#include "bin_cache.h"
 #include "stack.h"
 
 #include <las/test/concurrent_stress_tester.hpp>
@@ -47,11 +47,12 @@ concept allocator = requires(std::size_t size, void *ptr) {
 
 struct sgc2_alloc {
     static void *alloc(std::size_t size) {
-        return sgc2::bin_store::this_thread_store().alloc(size);
+        return std::bit_cast < void * > (sgc2::bin_alloc(size));
     }
 
     static void free(void *ptr) {
-        sgc2::bin_store::this_thread_store().free(ptr);
+        if (!ptr) { return; }
+        sgc2::bin_free(ptr);
     }
 };
 
@@ -83,10 +84,21 @@ void mixed_benchmark(benchmark::State &state) {
         }
     };
 
+    auto do_clear = [&]() {
+        for (std::size_t i = 0; i < state.range(0); ++i) {
+            if(auto *ptr = objects[i].exchange(nullptr)) {
+                alloc_t::free(ptr);
+            }
+        }
+    };
+
     while(state.KeepRunning()) {
         #ifdef MULTITHREADING
         stresser.dispatch(
-                {{[&] { do_replace(); }, 100}},
+                {
+                    {do_replace, 999},
+                    {do_clear, 1},
+                },
                 state.range(0));
         #else
         for (std::size_t i = 0; i < state.range(0); ++i) {
@@ -106,6 +118,8 @@ void mixed_benchmark(benchmark::State &state) {
 template <allocator alloc_t>
 void alloc_benchmark(benchmark::State &state) {
     for(auto _: state) {
+        state.PauseTiming();
+
         auto objects = std::make_unique<std::byte *[]>(state.range(0));
         std::fill_n(objects.get(), state.range(0), nullptr);
 
@@ -137,6 +151,9 @@ void alloc_benchmark(benchmark::State &state) {
                 alloc_t::free(ptr);
             }
         }
+
+        state.ResumeTiming();
+
     }
 }
 
@@ -177,10 +194,10 @@ void free_benchmark(benchmark::State &state) {
 
 #define RANGE Range(MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)
 #define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
-MY_BENCHMARK(mixed_benchmark< system_alloc >, "malloc - mixed baseline");
-MY_BENCHMARK(mixed_benchmark< sgc2_alloc >, "sgc2 - mixed");
+//MY_BENCHMARK(mixed_benchmark< system_alloc >, "malloc - mixed baseline");
+//MY_BENCHMARK(mixed_benchmark< sgc2_alloc >, "sgc2 - mixed");
 
-MY_BENCHMARK(alloc_benchmark< system_alloc >, "malloc - alloc baseline");
+// MY_BENCHMARK(alloc_benchmark< system_alloc >, "malloc - alloc baseline");
 MY_BENCHMARK(alloc_benchmark< sgc2_alloc >, "sgc2 - alloc");
 
 // MY_BENCHMARK(free_benchmark< system_alloc >, "malloc - free baseline");

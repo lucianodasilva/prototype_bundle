@@ -237,10 +237,10 @@ void run_benchmark (benchmark::State& state) {
     }
 }
 
-#define MIN_ITERATION_RANGE 1 << 16U
-#define MAX_ITERATION_RANGE 1 << 20U
+#define MIN_ITERATION_RANGE 1 << 8U
+#define MAX_ITERATION_RANGE 1 << 10U
 
-#define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kMillisecond)
+#define MY_BENCHMARK(func, name) BENCHMARK((func))->Range (MIN_ITERATION_RANGE, MAX_ITERATION_RANGE)->Name(name)->Unit(benchmark::TimeUnit::kNanosecond);
 
 MY_BENCHMARK(run_benchmark < std::mutex >, "mutex - baseline");
 MY_BENCHMARK(run_benchmark < demo_c::spin_mutex >, "spin (expert)");

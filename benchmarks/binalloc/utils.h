@@ -6,9 +6,12 @@
 #include <bit>
 #include <cstdint>
 #include <cmath>
+#include <mutex>
 #include <type_traits>
 #include <xmmintrin.h>
 #include <x86intrin.h>
+
+#include "config.h"
 
 namespace sgc2 {
 
@@ -43,32 +46,7 @@ namespace sgc2 {
         std::atomic_bool _lock{false};
     };
 
-    struct addressable {
-
-        [[nodiscard]] constexpr std::byte *address() const {
-            return std::bit_cast<std::byte *>(this);
-        }
-    };
-
-    /// Check if value is a power-of-two
-    /// \tparam value_t integer type
-    template <typename value_t>
-    constexpr bool is_pow_2(value_t num) {
-        static_assert(std::is_unsigned_v<value_t>, "is_pow_2 does not support signed data types!");
-        return (num & (num - 1)) == 0;
-    }
-
-    template<typename value_t>
-    constexpr value_t next_pow_2(value_t num) {
-        static_assert(std::is_unsigned_v<value_t>, "next_pow_2 does not support signed data types!");
-
-        if(!is_pow_2(num)) {
-            auto const index = _bit_scan_reverse(num);
-            num        = 1 << (index + 1);
-        }
-
-        return num;
-    }
+    using unique_spin_lock = std::unique_lock<spin_mutex>;
 
     /// check if value is a multiple of another value
     /// \tparam value_t integer type
@@ -88,60 +66,99 @@ namespace sgc2 {
         return ((value + multiplier - 1) / multiplier) * multiplier;
     }
 
-    /// Aligns an address to the nearest multiple of the alignment that precedes it
-    /// \details Returns the value of address if it is already aligned
-    /// \param address the address to align down
-    /// \param alignment the alignment to align down to
-    /// \return the aligned address
-    /// \note This function does not check if the alignment is a power of two, so
-    ///       it is the caller's responsibility to ensure that the alignment is a power of two
-    inline std::byte *align_down(std::byte *address, uintptr_t alignment) {
-        auto const alignment_mask = ~(alignment - 1);
 
-        return std::bit_cast<std::byte *>(std::bit_cast<std::uintptr_t>(address) & alignment_mask);
-    }
+    using address_t = std::uintptr_t;
+    constexpr address_t const null_address = 0;
 
-    /// Aligns an address to the nearest multiple of the alignment that follows it
-    /// \details Returns the value of address if it is already aligned
-    /// \param address the address to align up
-    /// \param alignment the alignment to align up to
-    /// \return the aligned address
-    /// \note This function does not check if the alignment is a power of two, so
-    ///       it is the caller's responsibility to ensure that the alignment is a power of two
-    inline std::byte *align_up(std::byte *address, uintptr_t alignment) {
-        auto const alignment_mask = ~(alignment - 1);
-
-        return std::bit_cast<std::byte *>(
-                (std::bit_cast<std::uintptr_t>(address) + alignment - 1) & alignment_mask);
-    }
-
-    /// Aligns an address to the nearest multiple of the alignment that follows it, excluding the address itself
-    /// \param address the address to align up
-    /// \param alignment the alignment to align up to
-    /// \return the aligned address
-    /// \note This function does not check if the alignment is a power of two, so
-    ///         it is the caller's responsibility to ensure that the alignment is a power of two
-    inline std::byte *align_up_exclusive(std::byte *address, uintptr_t alignment) {
-        auto const alignment_mask = ~(alignment - 1);
-
-        return std::bit_cast<std::byte *>(
-                (std::bit_cast<std::uintptr_t>(address) + alignment) & alignment_mask);
-    }
-
-    constexpr uint32_t count_powers_of_two(std::uint32_t const lhv, std::uint32_t const rhv) {
-        auto const start = std::ceil(std::log2(lhv));
-        auto const end = std::floor(std::log2(rhv));
-        return (end >= start) ? (end - start + 1) : 0;
-    }
+    struct link {
+        link *next{nullptr}; // pointer to the next item in the linked list
+    };
 
     /// get the address as a pointer to std::byte
-    inline std::byte *as_ptr(std::uintptr_t const address) noexcept {
+    inline std::byte *as_ptr(address_t const address) noexcept {
         return std::bit_cast<std::byte *>(address);
     }
 
     /// get the address as an integer
-    inline std::uintptr_t as_int(std::byte * const address) noexcept {
-        return std::bit_cast<std::uintptr_t>(address);
+    address_t as_address (auto * const ptr) noexcept {
+        return std::bit_cast<address_t>(ptr);
+    }
+
+    inline address_t align_down(address_t const address, uintptr_t const alignment) {
+        auto const alignment_mask = ~(alignment - 1);
+        return address & alignment_mask;
+    }
+
+    inline std::byte *align_down(std::byte *address, uintptr_t alignment) {
+        return std::bit_cast<std::byte *>(
+                align_down(std::bit_cast<std::uintptr_t>(address), alignment));
+    }
+
+    inline address_t align_up(address_t const address, uintptr_t const alignment) {
+        auto const alignment_mask = ~(alignment - 1);
+        return (address + alignment - 1) & alignment_mask;
+    }
+
+    inline std::byte *align_up(std::byte *address, uintptr_t alignment) {
+        return std::bit_cast<std::byte *>(
+                align_up(std::bit_cast<std::uintptr_t>(address), alignment));
+    }
+
+    inline address_t align_up_exclusive(address_t const address, uintptr_t const alignment) {
+        auto const alignment_mask = ~(alignment - 1);
+        return (address + alignment) & alignment_mask;
+    }
+
+    inline std::byte *align_up_exclusive(std::byte *address, uintptr_t alignment) {
+        return std::bit_cast<std::byte *>(
+                align_up_exclusive(std::bit_cast<std::uintptr_t>(address), alignment));
+    }
+
+
+    struct address_meta_t {
+        address_t   cluster;
+        address_t   page;
+        address_t   page_meta;
+        uint16_t    page_index;
+
+        [[nodiscard]] struct cluster_meta * cluster_meta_as_ptr () const { return std::bit_cast < cluster_meta * >(cluster); }
+        [[nodiscard]] struct page_meta * page_meta_as_ptr () const { return std::bit_cast < sgc2::page_meta * > (page_meta); }
+    };
+
+    constexpr address_meta_t address_meta (address_t cluster_address, uint16_t page_index) {
+        auto const & cfg = config();
+
+        return {
+            .cluster = cluster_address,
+            .page = cluster_address + cfg.page_size * (page_index + 1),
+            .page_meta = cluster_address + cfg.page_meta_size,
+            .page_index = page_index,
+        };
+    }
+
+    constexpr address_meta_t address_meta (address_t const address) {
+        auto const & cfg = config();
+
+        auto const cluster_address = align_down(address, cfg.cluster_size);
+        auto const page_index = static_cast < uint16_t > ((address - cluster_address) / cfg.page_size);
+
+        return address_meta (cluster_address, page_index);
+    }
+
+    constexpr address_meta_t address_meta (struct page_meta const * pmeta) {
+        auto const address = as_address(pmeta);
+        auto const & cfg = config();
+
+        auto const cluster_address = align_down(address, cfg.cluster_size);
+        auto const page_index = static_cast < uint16_t > ((address - cluster_address) / cfg.page_meta_size);
+
+        return address_meta (cluster_address, page_index);
+    }
+
+    constexpr int count_powers_of_two(std::uint32_t const lhv, std::uint32_t const rhv) {
+        auto const start = std::ceil(std::log2(lhv));
+        auto const end = std::floor(std::log2(rhv));
+        return (end >= start) ? (end - start + 1) : 0;
     }
 
     /// page size in bytes

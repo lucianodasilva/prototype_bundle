@@ -17,7 +17,7 @@ endmacro()
 
 include_directories (${CMAKE_CURRENT_LIST_DIR})
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 
 # Test LTO
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
@@ -145,7 +145,11 @@ endif()
 
 if (build_streaming_math)
     add_executable (streaming_math benchmarks/streaming-math.cpp)
-    target_link_libraries (streaming_math PUBLIC benchmark::benchmark benchmark::benchmark_main)
+    target_link_libraries (streaming_math PUBLIC benchmark::benchmark benchmark::benchmark_main glm::glm)
+    target_compile_options(streaming_math PUBLIC
+            $<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>:-mavx2 -mfma -march=native>
+            $<$<CXX_COMPILER_ID:MSVC>:/arch:AVX2>
+    )
 endif()
 
 if (build_tracing_ptr)
@@ -160,16 +164,19 @@ endif()
 
 if (build_binalloc)
     add_executable(binalloc
-            benchmarks/binalloc/basic_alloc.h
-            benchmarks/binalloc/bin.cpp
-            benchmarks/binalloc/bin.h
+            benchmarks/binalloc/bin_cache.cpp
+            benchmarks/binalloc/bin_cache.h
+            benchmarks/binalloc/cluster.cpp
+            benchmarks/binalloc/cluster.h
+            benchmarks/binalloc/cluster_cache.cpp
+            benchmarks/binalloc/cluster_cache.h
             benchmarks/binalloc/config.cpp
             benchmarks/binalloc/config.h
             benchmarks/binalloc/main.cpp
             benchmarks/binalloc/page.cpp
             benchmarks/binalloc/page.h
-            benchmarks/binalloc/slab.cpp
-            benchmarks/binalloc/slab.h
+            benchmarks/binalloc/page_cache.cpp
+            benchmarks/binalloc/page_cache.h
             benchmarks/binalloc/stack.h
             benchmarks/binalloc/utils.cpp
             benchmarks/binalloc/utils.h)
